@@ -1,0 +1,162 @@
+name: Build and Deploy Packages
+
+on:
+  push:
+    branches:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      mock_build:
+        description: "Skip the SIMH build; generate fake packages to test the deploy path"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Base URL the bootable NetBSD disk image (and optional NVRAM) live under,
+  # named NetBSD-<version>-<arch>.img.gz (raw VHD — the format SIMH boots).
+  #
+  # NOTE: netbsd-builder does not publish a vax image yet (its CI matrix is
+  # x86-64 and arm64 only; vax is on a branch). Set this to a release that
+  # carries the vax image once one exists, or add a preceding job that
+  # builds it with netbsd-builder's packer template.
+  IMAGE_BASE_URL: https://github.com/cross-platform-actions/netbsd-builder/releases/latest/download
+
+jobs:
+  generate-matrix:
+    name: Generate build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Generate matrix
+        id: matrix
+        run: |
+          matrix=$(sh scripts/generate-matrix.sh)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Shortcut for iterating on the deploy path: dispatch with
+      # mock_build=true to generate a handful of empty .tgz files plus a
+      # summary index, so the rest of the pipeline runs without waiting
+      # hours for the SIMH build.
+      - name: Mock build -- generate fake packages
+        if: ${{ inputs.mock_build }}
+        run: |
+          mkdir -p packages/All
+          for p in bash-5.2.37 sudo-1.9.16 curl-8.12.0 rsync-3.4.1; do
+              : > "packages/All/${p}.tgz"
+          done
+          : | gzip -9 > packages/All/pkg_summary.gz
+
+      # Restore previously-built packages. A unique key per run means save
+      # always succeeds; the restore-keys prefix falls back to the most
+      # recent cache for this target. Progressive runs converge to a full
+      # build under the 6-hour job limit.
+      - name: Restore packages cache
+        if: ${{ !inputs.mock_build }}
+        uses: actions/cache/restore@v4
+        with:
+          path: packages
+          key: packages-${{ matrix.build_name }}-${{ github.run_id }}
+          restore-keys: |
+            packages-${{ matrix.build_name }}-
+
+      - name: Install build dependencies
+        if: ${{ !inputs.mock_build }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git libpcap-dev sshpass curl gzip
+
+      - name: Build packages in SIMH
+        if: ${{ !inputs.mock_build }}
+        # Leaves ~20 minutes for cache save before the 6-hour job timeout.
+        timeout-minutes: 340
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ matrix.version }}
+          SIMH_BINARY: ${{ matrix.simh_binary }}
+          DISK_TYPE: ${{ matrix.disk_type }}
+        run: sh scripts/build-packages.sh
+
+      # Always save, even on timeout or failure, so partial progress is
+      # preserved. Skipped for mock builds so they don't pollute the cache.
+      - name: Save packages cache
+        if: ${{ always() && !inputs.mock_build }}
+        uses: actions/cache/save@v5
+        with:
+          path: packages
+          key: packages-${{ matrix.build_name }}-${{ github.run_id }}
+
+      - name: Prepare site tarball
+        run: |
+          abi_dir="${{ matrix.abi_dir }}"
+          mkdir -p "_site/$abi_dir"
+          cp -R packages/. "_site/$abi_dir/"
+          tar -C _site -czf site.tar.gz .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-${{ matrix.build_name }}
+          path: site.tar.gz
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: site-*
+
+      - name: Extract tarballs into _site
+        run: sh scripts/deploy/extract-artifacts.sh
+
+      - name: Generate landing page
+        env:
+          BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: sh scripts/deploy/generate-landing-page.sh
+
+      - name: Generate directory indexes
+        run: sh scripts/deploy/generate-directory-indexes.sh
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

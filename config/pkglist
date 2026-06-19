@@ -1,0 +1,12 @@
+# One pkgsrc package origin (category/name) per line. These are the
+# packages the other Cross-Platform Action ports get from official pkgsrc
+# binary mirrors but that have no prebuilt vax builds.
+#
+# Note the categories differ from FreeBSD's ports tree: in pkgsrc curl
+# lives under www, not ftp.
+#
+# Lines starting with # and blank lines are ignored.
+shells/bash
+security/sudo
+www/curl
+net/rsync

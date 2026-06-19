@@ -1,0 +1,58 @@
+#!/bin/sh
+# Runs INSIDE the NetBSD/vax guest, over ssh, as root.
+#
+# NetBSD base already ships bmake and the pkg_install tools (pkg_add,
+# pkg_info), so unlike non-NetBSD hosts there is no pkgsrc bootstrap step:
+# we only need the pkgsrc tree, then `make package` for each origin.
+#
+# Required environment variables:
+#   PKGSRC_BRANCH - quarterly branch/tag to fetch (e.g. pkgsrc-2025Q1)
+# Optional:
+#   PKGLIST       - path to the package-origin list (default /tmp/pkglist)
+
+set -eux
+
+PKGSRC_BRANCH="${PKGSRC_BRANCH:?PKGSRC_BRANCH must be set}"
+PKGLIST="${PKGLIST:-/tmp/pkglist}"
+PACKAGES_DIR=/usr/pkgsrc/packages
+
+# --- Fetch the pkgsrc tree (pinned) -----------------------------------------
+# Use base ftp(1) (tnftp), which speaks HTTPS — no curl/git needed, which
+# is the whole reason this repo exists. The quarterly tarball is fetched
+# only once; progressive (resumed) runs already have the tree on the disk
+# image restored from cache.
+if [ ! -f /usr/pkgsrc/mk/bsd.pkg.mk ]; then
+    cd /usr
+    ftp -o pkgsrc.tar.gz \
+        "https://cdn.netbsd.org/pub/pkgsrc/${PKGSRC_BRANCH}/pkgsrc.tar.gz"
+    tar -xzf pkgsrc.tar.gz
+    rm -f pkgsrc.tar.gz
+fi
+
+# --- Build each package -----------------------------------------------------
+# BATCH=yes suppresses interactive prompts. DEPENDS_TARGET=package makes
+# dependencies produce binary packages too (not just get installed), so the
+# published repo is self-contained and pkg_add can resolve the full closure.
+# A failing port is logged but does not abort the run, so the rest still
+# build and partial progress is cached.
+while IFS= read -r origin || [ -n "$origin" ]; do
+    case "$origin" in ''|\#*) continue ;; esac
+    if [ ! -d "/usr/pkgsrc/$origin" ]; then
+        echo "MISSING ORIGIN: $origin" >&2
+        continue
+    fi
+    cd "/usr/pkgsrc/$origin"
+    make package BATCH=yes DEPENDS_TARGET=package \
+        || echo "BUILD FAILED: $origin (exit $?)" >&2
+done < "$PKGLIST"
+
+# --- Generate the binary-package summary index ------------------------------
+# pkg_add (via PKG_PATH) and pkgin both read pkg_summary.gz from the
+# package directory. pkg_info -X emits the summary records for the given
+# packages.
+cd "$PACKAGES_DIR/All"
+# shellcheck disable=SC2035
+pkg_info -X *.tgz | gzip -9 > pkg_summary.gz
+
+echo "=== Built packages ==="
+ls -l "$PACKAGES_DIR/All"
