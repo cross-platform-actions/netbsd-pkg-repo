@@ -32,14 +32,16 @@ HOST=root@cross_platform_actions_host
 # image's sshd having the sftp subsystem enabled.
 SCP="scp -O"
 
-# Seed the guest package dir from the restored cache so `make package` skips
-# anything already built and up to date — this is what lets a progressive
-# run resume where a previous timed-out run stopped.
+# Stage the restored cache into the guest so `make package` skips anything
+# already built — this is what lets a progressive run resume where a
+# previous timed-out run stopped. It goes to /tmp/seed on root, because
+# /usr/pkgsrc doesn't exist yet: remote-build.sh mounts the scratch disk
+# there first, then copies the seed onto it.
 if [ -d "$REPO_ROOT/packages/All" ] && \
    [ -n "$(ls -A "$REPO_ROOT/packages/All" 2>/dev/null)" ]; then
-    echo "Seeding guest package dir from cache"
-    ssh "$HOST" 'mkdir -p /usr/pkgsrc/packages/All'
-    $SCP "$REPO_ROOT"/packages/All/*.tgz "$HOST":/usr/pkgsrc/packages/All/ || true
+    echo "Staging cached packages into the guest"
+    ssh "$HOST" 'mkdir -p /tmp/seed'
+    $SCP "$REPO_ROOT"/packages/All/*.tgz "$HOST":/tmp/seed/ || true
 fi
 
 # Copy the build inputs in and run the in-guest build as root. Wrap it in

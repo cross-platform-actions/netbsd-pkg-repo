@@ -62,6 +62,20 @@ That yields standard `/usr/pkg` packages and pulls them out with plain
 3900 is given its full **512 MB** (8× netbsd-builder's own 64 MB build cap),
 which is what makes the heavy closure (openssl, perl) tractable.
 
+### Disk layout
+
+The 1.5 GB RA92 root image can't hold the pkgsrc tree (>1 GB extracted) plus
+build work, and the emulated MicroVAX 3900's MSCP controller caps **any
+single disk at 2 GB** — a 12 GB disk like the QEMU-based ports is impossible.
+So the action attaches **two 2 GB scratch disks**, which `remote-build.sh`
+`newfs`es and mounts inside the guest:
+
+| Disk | Mount | Holds |
+|------|-------|-------|
+| ra0 (root, 1.5 GB) | `/` | base + comp + installed deps (`/usr/pkg`) |
+| ra1 (scratch, 2 GB) | `/usr/pkgsrc` | the pkgsrc tree + `.tgz` output |
+| ra2 (scratch, 2 GB) | `/wrk` | `WRKOBJDIR` (build work; freed after each origin) |
+
 ## Status
 
 ⚠️ **Bootstrap phase — not yet proven.** The action is pinned to its
@@ -113,8 +127,9 @@ The workflow runs three jobs per push:
 2. **build** — one job per matrix entry, on `ubuntu-latest`. A `Start VM`
     step boots the NetBSD/vax VM via the Cross-Platform Action
     (`sync_files: false`, `shutdown_vm: false`, `memory: 512M`); the build
-    step then, over ssh **as root** to `cross_platform_actions_host`: fetches
-    the pinned pkgsrc tree and runs `make package` for every origin in
+    step then, over ssh **as root** to `cross_platform_actions_host`: mounts
+    the two scratch disks (see *Disk layout*), fetches the pinned pkgsrc tree
+    onto `/usr/pkgsrc` and runs `make package` for every origin in
     `config/pkglist`. Built packages are pulled back out with `scp` and
     uploaded as an artifact.
 3. **deploy** — merges all artifacts into one tree

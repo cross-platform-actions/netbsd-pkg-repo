@@ -5,39 +5,73 @@
 # pkg_info), so unlike non-NetBSD hosts there is no pkgsrc bootstrap step:
 # we only need the pkgsrc tree, then `make package` for each origin.
 #
+# The 1.5 GB RA92 root disk is far too small for the pkgsrc tree (>1 GB
+# extracted) plus build work, and the emulated MicroVAX 3900 caps any single
+# MSCP disk at 2 GB. The action therefore attaches two 2 GB scratch disks
+# (RQ1/RQ2 -> ra1/ra2); we newfs and mount them here: the tree and package
+# output on ra1 (/usr/pkgsrc), the build work directory on ra2 (WRKOBJDIR),
+# so nothing but the installed packages touches root.
+#
 # Required environment variables:
 #   PKGSRC_BRANCH - quarterly branch/tag to fetch (e.g. pkgsrc-2026Q2)
 # Optional:
-#   PKGLIST       - path to the package-origin list (default /tmp/pkglist)
+#   PKGLIST  - path to the package-origin list (default /tmp/pkglist)
+#   SEED_DIR - dir of cached .tgz packages to pre-seed (default /tmp/seed)
 #
 # Exit status: 0 only if every requested origin produced a binary package.
-# A fatal setup error (pkgsrc fetch/extract failed — e.g. the ~1.5 GB RA92
-# disk filling up) aborts immediately via `set -e`; a per-package build
-# failure is recorded and reported at the end with a non-zero exit, so the
-# caller never publishes an incomplete repository.
+# A fatal setup error (scratch-disk setup, or pkgsrc fetch/extract) aborts
+# immediately via `set -e`; a per-package build failure is recorded and
+# reported at the end with a non-zero exit, so the caller never publishes an
+# incomplete repository.
 
 set -eux
 
 PKGSRC_BRANCH="${PKGSRC_BRANCH:?PKGSRC_BRANCH must be set}"
 PKGLIST="${PKGLIST:-/tmp/pkglist}"
+SEED_DIR="${SEED_DIR:-/tmp/seed}"
 PACKAGES_DIR=/usr/pkgsrc/packages
+WRKOBJDIR=/wrk
 
-# Disk is the tight constraint on this image, so report it up front and
-# after fetching the tree.
-df -h /usr || true
+# --- Mount the scratch disks ------------------------------------------------
+# Fresh blank disks each run, so create the device nodes, newfs and mount.
+# 'c' is the whole-disk partition on NetBSD/vax, which the kernel exposes via
+# a default in-core disklabel for an unlabelled MSCP disk.
+mount_scratch() {  # $1=disk (e.g. ra1)  $2=mountpoint
+    ( cd /dev && sh MAKEDEV "$1" )
+    newfs "/dev/r${1}c"
+    mkdir -p "$2"
+    mount "/dev/${1}c" "$2"
+}
+mount_scratch ra1 /usr/pkgsrc
+mount_scratch ra2 "$WRKOBJDIR"
 
-# --- Fetch the pkgsrc tree (pinned) -----------------------------------------
-# Use base ftp(1) (tnftp), which speaks HTTPS — no curl/git needed, which
-# is the whole reason this repo exists. Under `set -e` a 404 or a tar that
-# runs out of disk aborts the script (non-zero), which the caller turns into
-# a red job — we must not silently continue with a missing/partial tree.
+# Send pkgsrc build work to the ra2 scratch disk instead of in-tree, so the
+# tree disk only holds the tree and the package output.
+echo "WRKOBJDIR=${WRKOBJDIR}" >> /etc/mk.conf
+
+df -h / /usr/pkgsrc "$WRKOBJDIR" || true
+
+# --- Seed from cache (packages built in previous, timed-out runs) -----------
+# Staged on root at $SEED_DIR by build-packages.sh before the /usr/pkgsrc
+# mount existed; copy onto the tree disk so `make package` reuses them.
+mkdir -p "$PACKAGES_DIR/All"
+if ls "$SEED_DIR"/*.tgz >/dev/null 2>&1; then
+    cp "$SEED_DIR"/*.tgz "$PACKAGES_DIR/All/"
+fi
+
+# --- Fetch the pkgsrc tree (pinned) onto ra1 --------------------------------
+# Use base ftp(1) (tnftp), which speaks HTTPS — no curl/git needed, which is
+# the whole reason this repo exists. Download to the ra2 work disk so the
+# 96 MB tarball doesn't compete with the tree on ra1; extract into the
+# /usr/pkgsrc mount. Under `set -e` a 404 or a truncated download aborts.
 if [ ! -f /usr/pkgsrc/mk/bsd.pkg.mk ]; then
-    cd /usr
-    ftp -o pkgsrc.tar.gz \
+    ftp -o "$WRKOBJDIR/pkgsrc.tar.gz" \
         "https://cdn.netbsd.org/pub/pkgsrc/${PKGSRC_BRANCH}/pkgsrc.tar.gz"
-    tar -xzf pkgsrc.tar.gz
-    rm -f pkgsrc.tar.gz
-    df -h /usr || true
+    # The tarball's top-level dir is pkgsrc/, so extracting from /usr lands
+    # it in the /usr/pkgsrc mount.
+    ( cd /usr && tar -xzf "$WRKOBJDIR/pkgsrc.tar.gz" )
+    rm -f "$WRKOBJDIR/pkgsrc.tar.gz"
+    df -h /usr/pkgsrc || true
 fi
 
 # --- Build each package -----------------------------------------------------
@@ -62,8 +96,8 @@ while IFS= read -r origin || [ -n "$origin" ]; do
         echo "BUILD FAILED: $origin (exit $?)" >&2
         failed=1
     fi
-    # The RA92 image is only ~1.5 GB and openssl/perl work dirs are large,
-    # so free every work tree (including dependencies') after each origin.
+    # Free every work tree (including dependencies') after each origin so a
+    # 2 GB work disk suffices even for the heavy closure (openssl, perl).
     # The binary packages already live in $PACKAGES_DIR and installed deps
     # stay registered, so a later origin reuses them without rebuilding.
     make clean CLEANDEPENDS=yes >/dev/null 2>&1 || true
