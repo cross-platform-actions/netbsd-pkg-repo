@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=10"
-SCP="sshpass -p vagrant scp -P 2222 $SSH_OPTS"
+SCP="sshpass -p runner scp -P 2222 $SSH_OPTS"
 
 OUTPUT_DIR="$REPO_ROOT/packages"
 

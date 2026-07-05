@@ -21,14 +21,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Base URL the bootable NetBSD disk image (and optional NVRAM) live under,
-  # named NetBSD-<version>-<arch>.img.gz (raw VHD — the format SIMH boots).
-  #
-  # NOTE: netbsd-builder does not publish a vax image yet (its CI matrix is
-  # x86-64 and arm64 only; vax is on a branch). Set this to a release that
-  # carries the vax image once one exists, or add a preceding job that
-  # builds it with netbsd-builder's packer template.
-  IMAGE_BASE_URL: https://github.com/cross-platform-actions/netbsd-builder/releases/latest/download
+  # Release download base for the bootable disk image, named
+  # netbsd-<version>-<arch>.img.zst (raw SIMH RA92, zstd-compressed). This
+  # is the same image the Cross-Platform Action publishes and consumes for
+  # NetBSD/vax; keep the tag in sync with the action's
+  # version.operating_system.netbsd (src/version.ts).
+  IMAGE_BASE_URL: https://github.com/cross-platform-actions/netbsd-builder/releases/download/v0.7.0-rc1
 
 jobs:
   generate-matrix:
@@ -89,7 +87,8 @@ jobs:
         if: ${{ !inputs.mock_build }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git libpcap-dev sshpass curl gzip
+          sudo apt-get install -y build-essential git libpcap-dev sshpass \
+            zstd curl
 
       - name: Build packages in SIMH
         if: ${{ !inputs.mock_build }}

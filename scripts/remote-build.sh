@@ -44,6 +44,11 @@ while IFS= read -r origin || [ -n "$origin" ]; do
     cd "/usr/pkgsrc/$origin"
     make package BATCH=yes DEPENDS_TARGET=package \
         || echo "BUILD FAILED: $origin (exit $?)" >&2
+    # The RA92 image is only ~1.5 GB and openssl/perl work dirs are large,
+    # so free every work tree (including dependencies') after each origin.
+    # The binary packages already live in $PACKAGES_DIR and installed deps
+    # stay registered, so a later origin reuses them without rebuilding.
+    make clean CLEANDEPENDS=yes >/dev/null 2>&1 || true
 done < "$PKGLIST"
 
 # --- Generate the binary-package summary index ------------------------------

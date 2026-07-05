@@ -10,9 +10,11 @@
 # Required environment variables (from the GitHub Actions matrix + workflow):
 #   ARCH, VERSION, SIMH_BINARY, DISK_TYPE, IMAGE_BASE_URL
 #
-# The guest is the netbsd-builder artifact: sshd enabled, root password
-# "vagrant", a passwordless secondary user. We log in as root (needed to
-# write /usr/pkgsrc) with sshpass.
+# The guest is the netbsd-builder artifact the action publishes: sshd
+# enabled with PermitRootLogin + password auth, and both root and the
+# `runner` user set to password "runner". We log in as root (needed to
+# write /usr/pkgsrc) with sshpass — no sudo/doas exists in NetBSD base, but
+# direct root ssh makes that irrelevant.
 
 set -eux
 
@@ -25,14 +27,18 @@ PKGSRC_BRANCH="$(grep -v '^[[:space:]]*#' "$REPO_ROOT/config/pkgsrc_branch" \
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=10 -o ServerAliveInterval=30"
-SSH="sshpass -p vagrant ssh -p 2222 $SSH_OPTS root@127.0.0.1"
-SCP="sshpass -p vagrant scp -P 2222 $SSH_OPTS"
+SSH="sshpass -p runner ssh -p 2222 $SSH_OPTS root@127.0.0.1"
+SCP="sshpass -p runner scp -P 2222 $SSH_OPTS"
 
 # Step 1: build SIMH, fetch the image, write the boot command file.
 sh "$SCRIPT_DIR/setup-simh.sh"
 
-# Step 2: boot the guest in the background, logging the console.
-"$SIMH_DIR/$SIMH_BINARY" "$SIMH_DIR/boot.ini" > "$SIMH_DIR/console.log" 2>&1 &
+# Step 2: boot the guest in the background. The command file detaches the
+# console to a buffered telnet port and drives the >>> firmware prompt with
+# SIMH-native expect/send, so SIMH runs fully headless; we just background it
+# and reach the guest over the NAT redirect. SCP/attach messages go to
+# simh.log; the guest console goes to console.log (set inside simh.ini).
+"$SIMH_DIR/$SIMH_BINARY" "$SIMH_DIR/simh.ini" > "$SIMH_DIR/simh.log" 2>&1 &
 SIMH_PID=$!
 # Best-effort console halt + simulator kill on exit.
 trap '$SSH "halt -p" || true; kill "$SIMH_PID" 2>/dev/null || true' EXIT

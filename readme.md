@@ -4,8 +4,11 @@ Binary NetBSD [pkgsrc] packages built for CPU architectures not covered by
 the official NetBSD package mirrors (e.g. vax).
 
 The packages are built **natively inside a full-system [SIMH] emulator**,
-booted from a prebuilt [netbsd-builder] disk image, and published to GitHub
+booted from the same prebuilt [netbsd-builder] disk image the
+[Cross-Platform Action] publishes for NetBSD/vax, and published to GitHub
 Pages on every push to `master`.
+
+[Cross-Platform Action]: https://github.com/cross-platform-actions/action
 
 [pkgsrc]: https://www.pkgsrc.org/
 [SIMH]: https://opensimh.org/
@@ -33,13 +36,31 @@ Actions job limit is a real ceiling. The build caches progress between runs
 
 [freebsd-pkg-repo]: https://github.com/cross-platform-actions/freebsd-pkg-repo
 
+### Why not the action's `run:`?
+
+The action *does* now support NetBSD/vax, and we reuse the disk image it
+publishes. But we do **not** run the build through the action's `run:`
+mechanism, because for vax it:
+
+- runs commands as the unprivileged `runner` user with **no sudo** (NetBSD
+  base has no `doas`/`sudo` either) — but building standard `/usr/pkg`
+  packages needs root; and
+- **rejects file synchronization** (the image has no `rsync`), so there is
+  no built-in way to get the `.tgz` files back out.
+
+Instead we boot SIMH ourselves and ssh in as **root** (the image enables
+`PermitRootLogin` + password auth; root's password is `runner`). That makes
+sudo irrelevant, and packages come out with plain **`scp`** — which *is* in
+NetBSD base; only `rsync` is missing. The emulated MicroVAX 3900 is also
+given its full **512 MB** (8× netbsd-builder's own 64 MB build cap), which
+is what makes the heavy closure (openssl, perl) tractable.
+
 ## Status
 
-⚠️ **Not yet proven.** In particular, netbsd-builder does not publish a vax
-disk image yet (its CI matrix is x86-64 and arm64 only; vax lives on a
-branch). Until it does, set `IMAGE_BASE_URL` in the workflow to a release
-that carries `NetBSD-<version>-<arch>.img.gz`, or add a preceding job that
-builds the image with netbsd-builder's packer template.
+⚠️ **Not yet proven.** The disk image and its URL are confirmed to exist,
+but the end-to-end SIMH build (expect-driven boot, in-guest `make package`
+of the full closure within the disk/time budget) has not been run green
+yet.
 
 ## Supported targets
 
@@ -94,11 +115,13 @@ The workflow runs three jobs per push:
 1. **generate-matrix** — reads `config/architectures` and `config/versions`
     and emits a JSON matrix (architecture × version).
 2. **build** — one job per matrix entry, on `ubuntu-latest`. Builds SIMH from
-    source, downloads the prebuilt NetBSD disk image, boots it in SIMH with a
-    slirp NAT redirect (host `2222` → guest `10.0.2.15:22`), then over ssh:
-    fetches the pinned pkgsrc tree and runs `make package` for every origin in
-    `config/pkglist`. Built packages are pulled back out and uploaded as an
-    artifact.
+    source, downloads and decompresses the action's published NetBSD disk
+    image (raw RA92, `img.zst`), boots it in SIMH (an `expect` script sends
+    `boot dua0` at the `>>>` firmware prompt) with a slirp NAT redirect (host
+    `2222` → guest `10.0.2.15:22`), then over ssh **as root**: fetches the
+    pinned pkgsrc tree and runs `make package` for every origin in
+    `config/pkglist`. Built packages are pulled back out with `scp` and
+    uploaded as an artifact.
 3. **deploy** — merges all artifacts into one tree
     (`NetBSD-<version>-<arch>/All/...`), generates a landing page and
     directory indexes, and deploys to GitHub Pages.
