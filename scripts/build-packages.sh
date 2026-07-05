@@ -46,15 +46,29 @@ fi
 # timeout(1) so we stop well before the GitHub Actions step timeout (300
 # min), leaving room to collect whatever was built. Without this, a step
 # timeout would kill the run before collect-packages.sh, losing all progress
-# from this run. -k 60 escalates to SIGKILL if ssh ignores SIGTERM; `|| echo`
-# keeps `set -e` from aborting so we always fall through to collect.
+# from this run. -k 60 escalates to SIGKILL if ssh ignores SIGTERM.
+#
+# Capture the exit status instead of swallowing it: remote-build.sh exits
+# non-zero on a fatal setup error (e.g. pkgsrc fetch failed), on timeout, or
+# when not every requested package built. We still collect whatever exists
+# (so partial progress is cached for the next run), but then propagate the
+# failure so the job goes red and the deploy is skipped — an incomplete or
+# empty repository must never be published.
 $SCP "$SCRIPT_DIR/remote-build.sh" "$REPO_ROOT/config/pkglist" "$HOST":/tmp/
+build_status=0
 timeout -k 60 270m \
     ssh "$HOST" "PKGSRC_BRANCH='$PKGSRC_BRANCH' PKGLIST=/tmp/pkglist \
         sh /tmp/remote-build.sh" \
-    || echo "remote-build.sh did not complete normally (exit $?)"
+    || build_status=$?
 
 # Collect built packages into the workspace for caching + deploy. Runs
-# unconditionally so partial progress survives a timeout/failure.
+# regardless of the build status so partial progress survives a
+# timeout/failure and can be re-seeded on the next run.
 sh "$SCRIPT_DIR/collect-packages.sh" \
     || echo "collect-packages.sh failed (exit $?)"
+
+if [ "$build_status" -ne 0 ]; then
+    echo "Build did not complete successfully (exit $build_status); " \
+        "not deploying." >&2
+    exit "$build_status"
+fi
