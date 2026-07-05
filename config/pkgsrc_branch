@@ -1,4 +1,4 @@
 # The pkgsrc branch/tag to build from. Pinning a quarterly branch makes
 # the build reproducible: the same branch yields the same package set.
 # Bump this line to move to a newer quarterly release.
-pkgsrc-2025Q1
+pkgsrc-2026Q2

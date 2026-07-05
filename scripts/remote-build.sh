@@ -6,7 +6,7 @@
 # we only need the pkgsrc tree, then `make package` for each origin.
 #
 # Required environment variables:
-#   PKGSRC_BRANCH - quarterly branch/tag to fetch (e.g. pkgsrc-2025Q1)
+#   PKGSRC_BRANCH - quarterly branch/tag to fetch (e.g. pkgsrc-2026Q2)
 # Optional:
 #   PKGLIST       - path to the package-origin list (default /tmp/pkglist)
 
