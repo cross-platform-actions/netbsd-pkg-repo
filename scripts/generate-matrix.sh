@@ -19,15 +19,10 @@ while IFS= read -r version || [ -n "$version" ]; do
     # Skip empty lines and comments
     case "$version" in ''|\#*) continue ;; esac
 
-    while IFS= read -r arch_line || [ -n "$arch_line" ]; do
-        # Skip empty lines and comments
-        case "$arch_line" in ''|\#*) continue ;; esac
-
-        # shellcheck disable=SC2086
-        set -- $arch_line
-        arch=$1
-        simh_binary=$2
-        disk_type=$3
+    while IFS= read -r arch || [ -n "$arch" ]; do
+        # Skip empty lines and comments; trim surrounding whitespace
+        arch=$(printf '%s' "$arch" | tr -d '[:space:]')
+        case "$arch" in ''|\#*) continue ;; esac
 
         # ABI directory, matching netbsd-builder's image naming, e.g.
         # NetBSD-10.1-vax. This is the published per-target subtree under
@@ -45,8 +40,8 @@ while IFS= read -r version || [ -n "$version" ]; do
             printf ','
         fi
 
-        printf '{"arch":"%s","simh_binary":"%s","disk_type":"%s","version":"%s","abi_dir":"%s","build_name":"%s"}' \
-            "$arch" "$simh_binary" "$disk_type" "$version" "$abi_dir" "$build_name"
+        printf '{"arch":"%s","version":"%s","abi_dir":"%s","build_name":"%s"}' \
+            "$arch" "$version" "$abi_dir" "$build_name"
 
     done < "$ARCH_FILE"
 done < "$VERSIONS_FILE"

@@ -1,18 +1,7 @@
-# NetBSD architectures with no official prebuilt pkgsrc binaries.
-#
-# Unlike the FreeBSD repo (poudriere + qemu-user-static), these are built
-# inside a full-system SIMH emulator, because no qemu-user backend exists
-# for these CPUs. Each line therefore describes the SIMH machine, not a
-# binfmt/qemu interpreter.
-#
-# Space-separated fields, one architecture per line:
-#
-#   <arch> <simh_binary> <disk_type>
-#
-#   arch         MACHINE_ARCH / pkgsrc arch; also the disk-image arch name
-#                used by netbsd-builder (e.g. vax).
-#   simh_binary  Name of the SIMH simulator that runs this arch (e.g. vax).
-#   disk_type    SIMH RQ0 disk type the image was built with (e.g. RA92).
+# NetBSD architectures with no official prebuilt pkgsrc binaries, one per
+# line. The Cross-Platform Action boots the VM for each (NetBSD/vax runs on
+# the SIMH MicroVAX 3900 simulator); this file just lists which architectures
+# to build for.
 #
 # Lines starting with # and blank lines are ignored.
-vax vax RA92
+vax
