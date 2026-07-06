@@ -26,6 +26,12 @@
 
 set -eux
 
+# Non-interactive ssh shells get a minimal PATH without /sbin and /usr/sbin,
+# where newfs, mount, disklabel and pkg_info/pkg_add live. Put them on PATH
+# up front so every command below resolves.
+PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/pkg/sbin:/usr/pkg/bin
+export PATH
+
 PKGSRC_BRANCH="${PKGSRC_BRANCH:?PKGSRC_BRANCH must be set}"
 PKGLIST="${PKGLIST:-/tmp/pkglist}"
 SEED_DIR="${SEED_DIR:-/tmp/seed}"
