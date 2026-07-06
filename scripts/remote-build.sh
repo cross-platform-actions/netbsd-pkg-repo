@@ -41,10 +41,12 @@ WRKOBJDIR=/wrk
 # --- Mount the scratch disks ------------------------------------------------
 # Fresh blank disks each run, so create the device nodes, newfs and mount.
 # 'c' is the whole-disk partition on NetBSD/vax, which the kernel exposes via
-# a default in-core disklabel for an unlabelled MSCP disk.
+# a default in-core disklabel for an unlabelled MSCP disk. That default label
+# types the partition 'unused', so newfs needs -I to skip its "not 4.2BSD"
+# check rather than us having to write a disklabel first.
 mount_scratch() {  # $1=disk (e.g. ra1)  $2=mountpoint
     ( cd /dev && sh MAKEDEV "$1" )
-    newfs "/dev/r${1}c"
+    newfs -I "/dev/r${1}c"
     mkdir -p "$2"
     mount "/dev/${1}c" "$2"
 }
