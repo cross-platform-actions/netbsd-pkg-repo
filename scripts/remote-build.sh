@@ -44,9 +44,16 @@ WRKOBJDIR=/wrk
 # a default in-core disklabel for an unlabelled MSCP disk. That default label
 # types the partition 'unused', so newfs needs -I to skip its "not 4.2BSD"
 # check rather than us having to write a disklabel first.
+#
+# The pkgsrc tree is only ~633 MB of content but ~290k mostly-tiny files.
+# newfs's defaults on a 2 GB disk give far too few inodes (~130k) and round
+# every tiny file up to a 32 KB block, so the tree overflowed 2 GB partway
+# through extraction. Force small blocks/fragments (8 KB/1 KB) and a high
+# inode count (-i 4096 → ~520k inodes) so the whole tree fits with room to
+# spare for the build.
 mount_scratch() {  # $1=disk (e.g. ra1)  $2=mountpoint
     ( cd /dev && sh MAKEDEV "$1" )
-    newfs -I "/dev/r${1}c"
+    newfs -I -b 8192 -f 1024 -i 4096 "/dev/r${1}c"
     mkdir -p "$2"
     mount "/dev/${1}c" "$2"
 }
