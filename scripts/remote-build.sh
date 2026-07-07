@@ -68,10 +68,18 @@ df -h / /usr/pkgsrc "$WRKOBJDIR" || true
 
 # --- Seed from cache (packages built in previous, timed-out runs) -----------
 # Staged on root at $SEED_DIR by build-packages.sh before the /usr/pkgsrc
-# mount existed; copy onto the tree disk so `make package` reuses them.
+# mount existed; copy onto the tree disk, then install them so `make package`
+# treats those deps as satisfied and skips rebuilding. Without installing
+# them, every run rebuilds the whole closure from scratch and can't converge
+# within the job time limit. PKG_PATH lets pkg_add resolve inter-package
+# deps; errors (already-installed, version skew after a branch bump) are
+# non-fatal.
 mkdir -p "$PACKAGES_DIR/All"
 if ls "$SEED_DIR"/*.tgz >/dev/null 2>&1; then
     cp "$SEED_DIR"/*.tgz "$PACKAGES_DIR/All/"
+fi
+if ls "$PACKAGES_DIR"/All/*.tgz >/dev/null 2>&1; then
+    PKG_PATH="$PACKAGES_DIR/All" pkg_add "$PACKAGES_DIR"/All/*.tgz || true
 fi
 
 # --- Fetch the pkgsrc tree (pinned) onto ra1 --------------------------------
@@ -87,6 +95,17 @@ if [ ! -f /usr/pkgsrc/mk/bsd.pkg.mk ]; then
     ( cd /usr && tar -xzf "$WRKOBJDIR/pkgsrc.tar.gz" )
     rm -f "$WRKOBJDIR/pkgsrc.tar.gz"
     df -h /usr/pkgsrc || true
+fi
+
+# net/rsync buildlinks pkgsrc security/openssl unconditionally, and openssl
+# needs perl to build — perl doesn't finish within the job time limit on the
+# emulated VAX. rsync doesn't need openssl (it has built-in checksums and is
+# used over ssh here), so strip the openssl buildlink from its Makefile; its
+# configure then builds rsync without pulling in pkgsrc openssl/perl.
+rsync_mk=/usr/pkgsrc/net/rsync/Makefile
+if [ -f "$rsync_mk" ]; then
+    grep -v 'security/openssl/buildlink3.mk' "$rsync_mk" > "$rsync_mk.tmp"
+    mv "$rsync_mk.tmp" "$rsync_mk"
 fi
 
 # --- Build each package -----------------------------------------------------

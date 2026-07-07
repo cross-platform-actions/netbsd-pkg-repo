@@ -59,8 +59,10 @@ scp  -O 'root@cross_platform_actions_host:/usr/pkgsrc/packages/All/*' packages/A
 
 That yields standard `/usr/pkg` packages and pulls them out with plain
 **`scp`** — which *is* in NetBSD base; only `rsync` is missing. The MicroVAX
-3900 is given its full **512 MB** (8× netbsd-builder's own 64 MB build cap),
-which is what makes the heavy closure (openssl, perl) tractable.
+3900 is given its full **512 MB** (8× netbsd-builder's own 64 MB build cap)
+so builds aren't memory-starved. Note this doesn't help with the one thing
+that's genuinely out of reach — perl (see *Using the repository*) — which is
+CPU-bound, not memory-bound.
 
 ### Disk layout
 
@@ -96,8 +98,15 @@ install with the base `pkg_add` (no pkgin bootstrap required):
 
 ```sh
 export PKG_PATH="https://<user>.github.io/netbsd-pkg-repo/NetBSD-10.1-vax/All"
-pkg_add bash sudo curl rsync
+pkg_add bash sudo rsync
 ```
+
+**Not curl.** curl needs openssl, and openssl needs perl to build; perl
+takes far longer than GitHub's 6-hour job limit to compile on the emulated
+VAX (single CPU) and cannot resume mid-compile, so it can never finish. Use
+base `ftp(1)` for HTTP/HTTPS fetches instead. `rsync` is shipped but built
+without its (also perl-dragging) openssl option; it works over ssh with its
+built-in checksums.
 
 Replace `<user>` with the GitHub user or organization hosting this repository.
 
@@ -108,7 +117,7 @@ All configuration is driven by plain-text lists. Add a line, push to
 
 | File | Purpose |
 |------|---------|
-| `config/pkglist` | One pkgsrc origin per line (e.g. `www/curl`) |
+| `config/pkglist` | One pkgsrc origin per line (e.g. `net/rsync`) |
 | `config/architectures` | One target architecture per line (see below) |
 | `config/versions` | One NetBSD version per line (e.g. `10.1`) |
 | `config/pkgsrc_branch` | The pinned pkgsrc quarterly branch to build from |
@@ -147,9 +156,9 @@ package set. Each run:
 - **saves** the (grown) `packages/` on completion — even on timeout or
   failure (`always()`).
 
-Successive runs therefore converge to a complete build. The heaviest part of
-the closure is `curl → openssl → perl`; expect several runs before it's
-complete.
+Successive runs therefore converge to a complete build. Any package that
+cannot build within one run in a single `make package` (nothing in the
+current list) would block, since a partial compile cannot be resumed.
 
 ## Setup
 

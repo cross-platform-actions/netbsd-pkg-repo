@@ -2,11 +2,14 @@
 # packages the other Cross-Platform Action ports get from official pkgsrc
 # binary mirrors but that have no prebuilt vax builds.
 #
-# Note the categories differ from FreeBSD's ports tree: in pkgsrc curl
-# lives under www, not ftp.
+# NOTE: curl is intentionally omitted. It needs openssl, and openssl needs
+# perl to build; perl takes far longer than GitHub's 6-hour job limit to
+# compile on the emulated VAX and can't resume mid-compile, so it can never
+# finish. curl's HTTP-fetch role is already covered by NetBSD base ftp(1).
+# rsync is kept but patched (see remote-build.sh) to drop its openssl
+# dependency for the same reason.
 #
 # Lines starting with # and blank lines are ignored.
 shells/bash
 security/sudo
-www/curl
 net/rsync
