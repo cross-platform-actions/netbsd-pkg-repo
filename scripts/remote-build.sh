@@ -90,10 +90,12 @@ if [ ! -f /usr/pkgsrc/mk/bsd.pkg.mk ]; then
 fi
 
 # --- Build each package -----------------------------------------------------
-# BATCH=yes suppresses interactive prompts. DEPENDS_TARGET=package makes
-# dependencies produce binary packages too (not just get installed), so the
-# published repo is self-contained and pkg_add can resolve the full closure.
-# A failing origin is recorded but does not abort the loop, so the rest still
+# BATCH=yes suppresses interactive prompts. DEPENDS_TARGET=package-install
+# makes each dependency both produce a binary package (so the published repo
+# is self-contained and pkg_add can resolve the full closure) AND get
+# installed (so dependents find it — plain `package` only packages, leaving
+# the dependency uninstalled and the build failing its depends check). A
+# failing origin is recorded but does not abort the loop, so the rest still
 # build and partial progress is cached — but `failed` makes the whole run
 # exit non-zero so an incomplete set is never treated as success.
 failed=0
@@ -105,7 +107,7 @@ while IFS= read -r origin || [ -n "$origin" ]; do
         continue
     fi
     cd "/usr/pkgsrc/$origin"
-    if make package BATCH=yes DEPENDS_TARGET=package; then
+    if make package BATCH=yes DEPENDS_TARGET=package-install; then
         :
     else
         echo "BUILD FAILED: $origin (exit $?)" >&2
