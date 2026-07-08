@@ -91,8 +91,10 @@ if [ ! -f /usr/pkgsrc/mk/bsd.pkg.mk ]; then
     ftp -o "$WRKOBJDIR/pkgsrc.tar.gz" \
         "https://cdn.netbsd.org/pub/pkgsrc/${PKGSRC_BRANCH}/pkgsrc.tar.gz"
     # The tarball's top-level dir is pkgsrc/, so extracting from /usr lands
-    # it in the /usr/pkgsrc mount.
-    ( cd /usr && tar -xzf "$WRKOBJDIR/pkgsrc.tar.gz" )
+    # it in the /usr/pkgsrc mount. --exclude-vcs skips the CVS metadata dirs
+    # (~a third of the tarball's ~290k files), which pkgsrc doesn't need to
+    # build — roughly halving the slow per-file extraction on emulated vax.
+    ( cd /usr && tar -xzf "$WRKOBJDIR/pkgsrc.tar.gz" --exclude-vcs )
     rm -f "$WRKOBJDIR/pkgsrc.tar.gz"
     df -h /usr/pkgsrc || true
 fi

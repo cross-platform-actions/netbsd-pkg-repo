@@ -100,11 +100,12 @@ jobs:
 
       - name: Build packages
         if: ${{ !inputs.mock_build }}
-        # The Start VM step above can take up to ~40 min to boot the emulated
-        # VAX, so cap this at 300 to leave headroom for cache save within the
-        # 6-hour job timeout. build-packages.sh additionally wraps the
-        # in-guest build in its own timeout so packages are always collected.
-        timeout-minutes: 300
+        # perl (a transitive build dep of nearly everything) needs most of the
+        # 6-hour job to finish in one run, so push this near the ceiling: the
+        # Start VM step boots in a few minutes, leaving cache save + artifact
+        # steps ~15 min after this cap. build-packages.sh wraps the in-guest
+        # build in a 330-min timeout so packages are always collected first.
+        timeout-minutes: 345
         run: sh scripts/build-packages.sh
 
       # Always save, even on timeout or failure, so partial progress is

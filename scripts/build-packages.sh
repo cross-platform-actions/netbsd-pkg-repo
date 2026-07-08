@@ -45,10 +45,13 @@ if [ -d "$REPO_ROOT/packages/All" ] && \
 fi
 
 # Copy the build inputs in and run the in-guest build as root. Wrap it in
-# timeout(1) so we stop well before the GitHub Actions step timeout (300
-# min), leaving room to collect whatever was built. Without this, a step
+# timeout(1) so we stop before the GitHub Actions step timeout (345 min),
+# leaving ~15 min to collect whatever was built. Without this, a step
 # timeout would kill the run before collect-packages.sh, losing all progress
-# from this run. -k 60 escalates to SIGKILL if ssh ignores SIGTERM.
+# from this run. -k 60 escalates to SIGKILL if ssh ignores SIGTERM. The
+# budget is pushed close to GitHub's 6-hour job limit because perl (a
+# transitive build dep of nearly everything, via texinfo/bison) needs most
+# of it to finish in a single run; once built it's cached and reused.
 #
 # Capture the exit status instead of swallowing it: remote-build.sh exits
 # non-zero on a fatal setup error (e.g. pkgsrc fetch failed), on timeout, or
@@ -58,7 +61,7 @@ fi
 # empty repository must never be published.
 $SCP "$SCRIPT_DIR/remote-build.sh" "$REPO_ROOT/config/pkglist" "$HOST":/tmp/
 build_status=0
-timeout -k 60 270m \
+timeout -k 60 330m \
     ssh "$HOST" "PKGSRC_BRANCH='$PKGSRC_BRANCH' PKGLIST=/tmp/pkglist \
         sh /tmp/remote-build.sh" \
     || build_status=$?
