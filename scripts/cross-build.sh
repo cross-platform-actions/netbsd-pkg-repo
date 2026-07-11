@@ -49,7 +49,7 @@ WORKSPACE="${WORKSPACE:?WORKSPACE must be set}"
 
 OBJDIR="$HOME/obj.$TARGET_ARCH"
 TOOLCHAIN_CACHE_DIR="$WORKSPACE/toolchain-cache"
-TOOLCHAIN_TARBALL="$TOOLCHAIN_CACHE_DIR/obj.tar"
+TOOLCHAIN_TARBALL="$TOOLCHAIN_CACHE_DIR/obj.tgz"
 PKGSRCDIR="$HOME/pkgsrc"
 SRCDIR="$HOME/src"
 PKGSRC_MAKECONF="$PKGSRCDIR/mk.conf"
@@ -93,7 +93,7 @@ rm -rf "$OBJDIR"
 mkdir -p "$OBJDIR"
 if [ -f "$TOOLCHAIN_TARBALL" ]; then
     echo "===== TOOLCHAIN CACHE HIT: extracting $TOOLCHAIN_TARBALL ====="
-    ( cd "$OBJDIR" && tar -xpf "$TOOLCHAIN_TARBALL" )
+    ( cd "$OBJDIR" && tar -xzpf "$TOOLCHAIN_TARBALL" )
 else
     echo "===== TOOLCHAIN CACHE MISS: building cross toolchain ====="
     if [ ! -f "$SRCDIR/build.sh" ]; then
@@ -107,11 +107,21 @@ else
     cd "$SRCDIR"
     ./build.sh -U -m "$TARGET_ARCH" -O "$OBJDIR" tools
     ./build.sh -U -m "$TARGET_ARCH" -O "$OBJDIR" distribution
+    # Free the ~1-2 GB source tree; the toolchain + sysroot in $OBJDIR is all
+    # the cross build needs from here on. Without this the guest disk fills
+    # while writing the cache tarball ("tar: Write error" -> a truncated
+    # obj.tar got cached and poisoned every later cache-hit run).
+    rm -rf "$SRCDIR"
     echo "===== Writing toolchain tarball for caching ====="
     mkdir -p "$TOOLCHAIN_CACHE_DIR"
-    # Tar the whole objdir (TOOLDIR + destdir) from within it so paths are
-    # relative and it extracts cleanly on the next run.
-    ( cd "$OBJDIR" && tar -cpf "$TOOLCHAIN_TARBALL" . )
+    # Cache ONLY the cross toolchain and the vax sysroot, gzip-compressed.
+    # Taring the whole objdir (which also holds GBs of build intermediates the
+    # package builds never need) as a raw tar overflowed the guest disk.
+    # Paths are relative (tar'd from within $OBJDIR) so it extracts cleanly.
+    ( cd "$OBJDIR" && tar -czpf "$TOOLCHAIN_TARBALL" tooldir.NetBSD-* "destdir.$TARGET_ARCH" )
+    # Verify the tarball is complete before it can be cached, so a truncated
+    # write fails loudly here instead of poisoning the cache for future runs.
+    tar -tzf "$TOOLCHAIN_TARBALL" >/dev/null
 fi
 
 # Resolve the real (glob-expanded) toolchain path and assert it exists, so a

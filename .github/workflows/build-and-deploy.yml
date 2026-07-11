@@ -45,7 +45,7 @@ jobs:
     name: Cross-build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
     needs: generate-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -86,9 +86,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: toolchain-cache
-          key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-${{ github.run_id }}
+          key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-v2-${{ github.run_id }}
           restore-keys: |
-            toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-
+            toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-v2-
 
       - name: Cross-build packages on NetBSD/amd64
         if: ${{ !inputs.mock_build }}
@@ -122,7 +122,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: toolchain-cache
-          key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-${{ github.run_id }}
+          key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-v2-${{ github.run_id }}
 
       - name: Prepare site tarball
         run: |
