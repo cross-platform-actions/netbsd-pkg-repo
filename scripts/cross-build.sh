@@ -162,7 +162,14 @@ show_native() {  # $1 = VARNAME -> its value on this host
 }
 {
     echo "SU_CMD=/usr/bin/sudo /bin/sh -c"
-    echo "USE_CROSS_COMPILE=yes"
+    # NOTE the ?= (per pkgsrc's HOWTO-use-crosscompile): it's a DEFAULT, not a
+    # force. Target packages cross-build, but pkgsrc recursively sets
+    # USE_CROSS_COMPILE=no for bootstrap/tool dependencies that must run on the
+    # host (libnbcompat, perl, texinfo, bison...), so those build NATIVELY for
+    # amd64 -- where their configure run-tests (AC_RUN "cannot run test program
+    # while cross compiling") execute fine. A hard = would force even host
+    # tools to cross-build and fail those probes.
+    echo "USE_CROSS_COMPILE?=yes"
     echo "TOOLDIR=${TOOLDIR}"
     echo "CROSS_DESTDIR=${CROSS_DESTDIR}"
     echo "CROSS_OBJECT_FMT=ELF"
