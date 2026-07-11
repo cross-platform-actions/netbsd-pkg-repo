@@ -73,7 +73,12 @@ CROSS_OPSYS_VERSION="$(opsys_version_int "$TARGET_VERSION")"
 echo "===== VERIFYING PASSWORDLESS SUDO ====="
 id
 sudo -n true
-echo "passwordless sudo OK"
+# Resolve sudo's real path: on NetBSD sudo is a pkgsrc binary in /usr/pkg/bin,
+# NOT /usr/bin, so SU_CMD must use the actual location (pkgsrc runs SU_CMD from
+# a make with its own PATH, where a bare `sudo` or a wrong absolute path is
+# "not found" -> Error 127).
+SUDO="$(command -v sudo)"
+echo "passwordless sudo OK: $SUDO"
 
 # --- 1. Cross toolchain + sysroot (build.sh) --------------------------------
 # CRITICAL (see LESSONS): NetBSD base make reads /etc/mk.conf by default, and
@@ -161,7 +166,7 @@ show_native() {  # $1 = VARNAME -> its value on this host
       env -u MAKECONF MAKECONF=/dev/null make show-var VARNAME="$1" )
 }
 {
-    echo "SU_CMD=/usr/bin/sudo /bin/sh -c"
+    echo "SU_CMD=${SUDO} /bin/sh -c"
     # NOTE the ?= (per pkgsrc's HOWTO-use-crosscompile): it's a DEFAULT, not a
     # force. Target packages cross-build, but pkgsrc recursively sets
     # USE_CROSS_COMPILE=no for bootstrap/tool dependencies that must run on the
