@@ -20,6 +20,11 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# NetBSD src branch used to build the cross toolchain. The toolchain cache is
+# keyed on this, so bumping it triggers a fresh (uncached) toolchain build.
+env:
+  SRC_BRANCH: netbsd-10
+
 jobs:
   generate-matrix:
     name: Generate build matrix
@@ -37,10 +42,10 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
+    name: Cross-build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
     needs: generate-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -51,71 +56,73 @@ jobs:
 
       # Shortcut for iterating on the deploy path: dispatch with
       # mock_build=true to generate a handful of empty .tgz files plus a
-      # summary index, so the rest of the pipeline runs without waiting
-      # hours for the VM build.
+      # summary index, so the rest of the pipeline runs without a VM build.
       - name: Mock build -- generate fake packages
         if: ${{ inputs.mock_build }}
         run: |
           mkdir -p packages/All
-          for p in bash-5.2.37 sudo-1.9.16 curl-8.12.0 rsync-3.4.1; do
+          for p in bash-5.2.37 sudo-1.9.16 rsync-3.4.1; do
               : > "packages/All/${p}.tgz"
           done
           : | gzip -9 > packages/All/pkg_summary.gz
 
-      # Restore previously-built packages. A unique key per run means save
-      # always succeeds; the restore-keys prefix falls back to the most
-      # recent cache for this target. Progressive runs converge to a full
-      # build under the 6-hour job limit.
-      - name: Restore packages cache
+      # Read the pinned pkgsrc branch so it can be passed into the guest.
+      - name: Read pkgsrc branch
+        if: ${{ !inputs.mock_build }}
+        id: cfg
+        run: |
+          branch=$(grep -v '^[[:space:]]*#' config/pkgsrc_branch \
+              | grep -v '^[[:space:]]*$' | head -n1)
+          echo "pkgsrc_branch=$branch" >> "$GITHUB_OUTPUT"
+
+      # Restore the cached vax cross toolchain (a single tarball under the
+      # workspace). A unique key per run means save always succeeds; the
+      # restore-keys prefix falls back to the newest cache for this
+      # arch+version+src-branch, so later runs reuse the ~90-min toolchain and
+      # finish in minutes. The guest extracts the tarball and skips build.sh
+      # when it is present.
+      - name: Restore toolchain cache
         if: ${{ !inputs.mock_build }}
         uses: actions/cache/restore@v4
         with:
-          path: packages
-          key: packages-${{ matrix.build_name }}-${{ github.run_id }}
+          path: toolchain-cache
+          key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-${{ github.run_id }}
           restore-keys: |
-            packages-${{ matrix.build_name }}-
+            toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-
 
-      # Boot the NetBSD/vax VM and leave it running for the build step. The
-      # action owns all the SIMH/image/boot machinery. sync_files must be
-      # false (the image has no rsync; the action rejects it otherwise), and
-      # shutdown_vm must be false so the VM — and the ssh config +
-      # SSH_ASKPASS the action sets up — survive into the next step.
-      #
-      # Pinned to the worktree-vax branch during bootstrap; move to a tagged
-      # release once NetBSD/vax support is released.
-      - name: Start VM
+      - name: Cross-build packages on NetBSD/amd64
         if: ${{ !inputs.mock_build }}
-        uses: cross-platform-actions/action@worktree-vax
+        uses: cross-platform-actions/action@v1.3.0
+        env:
+          PKGSRC_BRANCH: ${{ steps.cfg.outputs.pkgsrc_branch }}
+          SRC_BRANCH: ${{ env.SRC_BRANCH }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          TARGET_VERSION: ${{ matrix.version }}
         with:
           operating_system: netbsd
-          architecture: ${{ matrix.arch }}
-          version: ${{ matrix.version }}
-          # 512 MB is the MicroVAX 3900 maximum — 8x netbsd-builder's own
-          # 64 MB build cap, which is what makes the openssl/perl closure
-          # feasible.
-          memory: 512M
-          sync_files: false
-          shutdown_vm: false
-          run: 'true'
+          architecture: x86-64
+          version: "10.1"
+          memory: 12G
+          cpu_count: 4
+          # Bidirectional workspace sync (default) carries the toolchain
+          # tarball in and the built packages out.
+          environment_variables: >-
+            PKGSRC_BRANCH SRC_BRANCH TARGET_ARCH TARGET_VERSION
+          # Runs as the unprivileged `runner` user (passwordless sudo). The
+          # working dir maps to GITHUB_WORKSPACE; the PKGSRC_BRANCH/SRC_BRANCH/
+          # TARGET_* vars are forwarded via environment_variables above.
+          run: |
+            set -eux
+            WORKSPACE="$PWD" sh scripts/cross-build.sh
 
-      - name: Build packages
-        if: ${{ !inputs.mock_build }}
-        # perl (a transitive build dep of nearly everything) needs most of the
-        # 6-hour job to finish in one run, so push this near the ceiling: the
-        # Start VM step boots in a few minutes, leaving cache save + artifact
-        # steps ~15 min after this cap. build-packages.sh wraps the in-guest
-        # build in a 330-min timeout so packages are always collected first.
-        timeout-minutes: 345
-        run: sh scripts/build-packages.sh
-
-      # Always save, even on timeout or failure, so partial progress is
-      # preserved. Skipped for mock builds so they don't pollute the cache.
-      - name: Save packages cache
+      # Always save, even on failure, so a freshly built toolchain is cached
+      # for the next run regardless of whether every package built.
+      - name: Save toolchain cache
         if: ${{ always() && !inputs.mock_build }}
         uses: actions/cache/save@v5
         with:
-          path: packages
-          key: packages-${{ matrix.build_name }}-${{ github.run_id }}
+          path: toolchain-cache
+          key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-${{ github.run_id }}
 
       - name: Prepare site tarball
         run: |
@@ -130,9 +137,13 @@ jobs:
           name: site-${{ matrix.build_name }}
           path: site.tar.gz
 
+  # Deploy only from master. Branch pushes still build and upload artifacts
+  # (so a change can be reviewed from a green run) but must not publish to the
+  # live Pages site.
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    if: ${{ github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

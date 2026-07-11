@@ -1,13 +1,13 @@
-# One pkgsrc package origin (category/name) per line. These are the
-# packages the other Cross-Platform Action ports get from official pkgsrc
-# binary mirrors but that have no prebuilt vax builds.
+# One pkgsrc package origin (category/name) per line. These are packages the
+# other Cross-Platform Action ports get from the official pkgsrc binary
+# mirrors but that have no prebuilt vax builds.
 #
-# NOTE: curl is intentionally omitted. It needs openssl, and openssl needs
-# perl to build; perl takes far longer than GitHub's 6-hour job limit to
-# compile on the emulated VAX and can't resume mid-compile, so it can never
-# finish. curl's HTTP-fetch role is already covered by NetBSD base ftp(1).
-# rsync is kept but patched (see remote-build.sh) to drop its openssl
-# dependency for the same reason.
+# These are cross-compiled on a NetBSD/amd64 host (USE_CROSS_COMPILE=yes), not
+# built on emulated vax. Cross-compiling builds the whole build-tool closure
+# (perl, texinfo, bison) NATIVELY as tool-dependencies and never cross-builds a
+# target perl, so the openssl/perl chain that was infeasible on the emulated
+# VAX is no longer a blocker. curl (needs openssl -> perl) is a candidate to
+# add now that cross-compiling removes that blocker.
 #
 # Lines starting with # and blank lines are ignored.
 shells/bash

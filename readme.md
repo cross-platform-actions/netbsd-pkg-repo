@@ -3,87 +3,94 @@
 Binary NetBSD [pkgsrc] packages built for CPU architectures not covered by
 the official NetBSD package mirrors (e.g. vax).
 
-The packages are built **natively inside the NetBSD/vax VM** the
-[Cross-Platform Action] boots (a full-system [SIMH] MicroVAX 3900), from the
-prebuilt [netbsd-builder] disk image, and published to GitHub Pages on every
-push to `master`.
+The packages are **cross-compiled on a NetBSD/amd64 host** (booted by the
+[Cross-Platform Action]) using a [NetBSD `build.sh`][build.sh] cross toolchain
+and sysroot, then published to GitHub Pages on every push to `master`.
 
 [Cross-Platform Action]: https://github.com/cross-platform-actions/action
 
 [pkgsrc]: https://www.pkgsrc.org/
-[SIMH]: https://opensimh.org/
+[build.sh]: https://www.netbsd.org/docs/guide/en/chap-build.html
 [netbsd-builder]: https://github.com/cross-platform-actions/netbsd-builder
 
-## Why not the FreeBSD approach?
+## Why cross-compile instead of emulate?
 
 The sibling [freebsd-pkg-repo] builds with poudriere + **QEMU user-mode
 emulation** (`binmiscctl`), running the host natively and only emulating
-target binaries — fast (5–10× slowdown). That is impossible here: **there is
-no qemu-user backend for vax**, only full-system SIMH emulation. So this repo
-keeps freebsd-pkg-repo's structure (config-driven lists, matrix → build →
-deploy, GitHub Pages) but replaces the entire build engine:
+target binaries — fast (5–10× slowdown). That is impossible for vax: **there
+is no qemu-user backend for vax**, only full-system [SIMH] MicroVAX 3900
+emulation, which is far slower.
+
+Building *inside* emulated vax proved structurally infeasible: `perl` (a
+transitive build dependency of nearly everything, via texinfo/bison, and of
+openssl) takes **longer than GitHub's 6-hour job limit** to compile on the
+single-CPU emulated VAX and cannot resume mid-compile, so it can never finish.
+
+Cross-compiling fixes this at the root. With pkgsrc's `USE_CROSS_COMPILE=yes`,
+the entire build-tool closure (perl, texinfo, bison, …) is built **natively as
+tool-dependencies for the amd64 host**, and a target (vax) perl is *never*
+built. Only the actual target libraries and programs are cross-compiled, on a
+fast KVM-accelerated NetBSD/amd64 VM. This keeps freebsd-pkg-repo's structure
+(config-driven lists, matrix → build → deploy, GitHub Pages) but replaces the
+build engine:
 
 | FreeBSD | NetBSD (here) |
 |---|---|
-| poudriere | `bmake package` (pkgsrc) |
-| qemu-user-static + `binmiscctl` | full-system SIMH (via the action) |
-| Cross-Platform Action FreeBSD VM | Cross-Platform Action NetBSD/vax VM |
+| poudriere | `bmake package` (pkgsrc) with `USE_CROSS_COMPILE=yes` |
+| qemu-user-static + `binmiscctl` | NetBSD `build.sh` cross toolchain + sysroot |
+| Cross-Platform Action FreeBSD VM | Cross-Platform Action **NetBSD/amd64** VM |
 | `pkg` + `repos/custom.conf` | `pkg_add` + `PKG_PATH` |
 
-Full-system emulation is **slower** than qemu-user, so the 6-hour GitHub
-Actions job limit is a real ceiling. The build caches progress between runs
-(see *How it works*) so it converges across multiple runs.
-
 [freebsd-pkg-repo]: https://github.com/cross-platform-actions/freebsd-pkg-repo
+[SIMH]: https://opensimh.org/
 
-### How the build reaches the VM
+## How the build works
 
-The action boots the VM but we do **not** run the build through its `run:`
-mechanism, because for vax that runs as the unprivileged `runner` user with
-**no sudo** (NetBSD base has no `doas`/`sudo` either) and **rejects file
-synchronization** (the image has no `rsync`) — yet building standard
-`/usr/pkg` packages needs root, and the `.tgz` files need a way back out.
+Everything runs inside the NetBSD/amd64 guest booted by the Cross-Platform
+Action, as the unprivileged `runner` user (which has passwordless `sudo`).
+`scripts/cross-build.sh` orchestrates it:
 
-Instead we boot the VM with `shutdown_vm: false` and reuse the ssh setup the
-action leaves behind for later steps: an `/etc/hosts` entry and
-`~/.ssh/config` alias for `cross_platform_actions_host`, plus an
-`SSH_ASKPASS` helper that supplies the image password. The alias fixes only
-host/port/auth-method — not the user — and the image password is also
-**root's** password (`runner`, and `PermitRootLogin` is enabled), so a build
-step just does:
+1. **Cross toolchain + sysroot.** If the cached toolchain tarball is present
+   it is extracted; otherwise `build.sh -U -m vax -O <objdir> tools`
+   (~12 min) then `distribution` (~75 min) produce the cross gcc/binutils
+   (`TOOLDIR`) and the target headers+libraries sysroot (`CROSS_DESTDIR`).
+   `build.sh` runs **unprivileged** and with a clean default `MAKECONF` — the
+   pkgsrc cross settings are deliberately kept out of it.
+2. **pkgsrc.** The pinned quarterly tree is fetched with base `ftp(1)` (no
+   git/curl needed) and extracted.
+3. **Cross-build.** Each origin in `config/pkglist` is built with
+   `make package BATCH=yes DEPENDS_TARGET=package-install`, using a dedicated
+   pkgsrc `MAKECONF` (`$HOME/pkgsrc/mk.conf`) passed only on the pkgsrc make
+   command lines. That `MAKECONF` sets the cross variables plus
+   `SU_CMD=/usr/bin/sudo /bin/sh -c` so pkgsrc escalates for dependency
+   installation via passwordless `sudo` (base `su` fails non-interactively).
+4. **Publish.** The resulting vax `.tgz` and a generated `pkg_summary.gz` are
+   copied into the workspace, pulled back to the runner, and uploaded as an
+   artifact for the deploy job.
 
-```sh
-ssh  root@cross_platform_actions_host '…build…'
-scp  -O 'root@cross_platform_actions_host:/usr/pkgsrc/packages/All/*' packages/All/
-```
+An early, cheap assertion confirms pkgsrc actually resolves `SU_CMD` to sudo,
+`MACHINE_ARCH=vax` and `USE_CROSS_COMPILE=yes` **before** any long build, so a
+mis-wired `MAKECONF` fails in seconds rather than after hours.
 
-That yields standard `/usr/pkg` packages and pulls them out with plain
-**`scp`** — which *is* in NetBSD base; only `rsync` is missing. The MicroVAX
-3900 is given its full **512 MB** (8× netbsd-builder's own 64 MB build cap)
-so builds aren't memory-starved. Note this doesn't help with the one thing
-that's genuinely out of reach — perl (see *Using the repository*) — which is
-CPU-bound, not memory-bound.
+### MAKECONF scoping (important)
 
-### Disk layout
+NetBSD base `make` reads `/etc/mk.conf` by default; `$HOME/pkgsrc/mk.conf` is
+**not** read unless `MAKECONF` points at it. The pkgsrc cross config is
+therefore applied **only** to the pkgsrc `make` invocations (via
+`MAKECONF=$HOME/pkgsrc/mk.conf` on those command lines) and is **never**
+exported globally, so it cannot leak into `build.sh` and break its
+`distribution`/postinstall.
 
-The 1.5 GB RA92 root image can't hold the pkgsrc tree (>1 GB extracted) plus
-build work, and the emulated MicroVAX 3900's MSCP controller caps **any
-single disk at 2 GB** — a 12 GB disk like the QEMU-based ports is impossible.
-So the action attaches **two 2 GB scratch disks**, which `remote-build.sh`
-`newfs`es and mounts inside the guest:
+## Toolchain caching
 
-| Disk | Mount | Holds |
-|------|-------|-------|
-| ra0 (root, 1.5 GB) | `/` | base + comp + installed deps (`/usr/pkg`) |
-| ra1 (scratch, 2 GB) | `/usr/pkgsrc` | the pkgsrc tree + `.tgz` output |
-| ra2 (scratch, 2 GB) | `/wrk` | `WRKOBJDIR` (build work; freed after each origin) |
-
-## Status
-
-⚠️ **Bootstrap phase — not yet proven.** The action is pinned to its
-`worktree-vax` branch until NetBSD/vax support is released; the end-to-end
-build (in-guest `make package` of the full closure within the disk/time
-budget) has not been run green yet.
+The `build.sh` toolchain + sysroot is expensive (~90 min) but stable, so it is
+cached and reused: later runs restore it and finish in minutes instead of
+hours. The objdir is multi-GB and ~100k files, which is slow to rsync across
+the guest/runner boundary, so it is moved as a **single tarball**
+(`toolchain-cache/obj.tar`) under the workspace and persisted on the runner
+with `actions/cache`, keyed on the target arch+version and the NetBSD
+`SRC_BRANCH`. Bumping `SRC_BRANCH` invalidates the cache and rebuilds the
+toolchain.
 
 ## Supported targets
 
@@ -101,13 +108,6 @@ export PKG_PATH="https://<user>.github.io/netbsd-pkg-repo/NetBSD-10.1-vax/All"
 pkg_add bash sudo rsync
 ```
 
-**Not curl.** curl needs openssl, and openssl needs perl to build; perl
-takes far longer than GitHub's 6-hour job limit to compile on the emulated
-VAX (single CPU) and cannot resume mid-compile, so it can never finish. Use
-base `ftp(1)` for HTTP/HTTPS fetches instead. `rsync` is shipped but built
-without its (also perl-dragging) openssl option; it works over ssh with its
-built-in checksums.
-
 Replace `<user>` with the GitHub user or organization hosting this repository.
 
 ## Adding things
@@ -124,41 +124,24 @@ All configuration is driven by plain-text lists. Add a line, push to
 
 ### `config/architectures` format
 
-One architecture per line — the value passed to the action's `architecture`
-input (e.g. `vax`). Lines starting with `#` and blank lines are ignored.
+One architecture per line — the target `MACHINE_ARCH` to cross-build for
+(e.g. `vax`). Lines starting with `#` and blank lines are ignored.
 
-## How it works
+## How the workflow is structured
 
 The workflow runs three jobs per push:
 
 1. **generate-matrix** — reads `config/architectures` and `config/versions`
-    and emits a JSON matrix (architecture × version).
-2. **build** — one job per matrix entry, on `ubuntu-latest`. A `Start VM`
-    step boots the NetBSD/vax VM via the Cross-Platform Action
-    (`sync_files: false`, `shutdown_vm: false`, `memory: 512M`); the build
-    step then, over ssh **as root** to `cross_platform_actions_host`: mounts
-    the two scratch disks (see *Disk layout*), fetches the pinned pkgsrc tree
-    onto `/usr/pkgsrc` and runs `make package` for every origin in
-    `config/pkglist`. Built packages are pulled back out with `scp` and
-    uploaded as an artifact.
-3. **deploy** — merges all artifacts into one tree
-    (`NetBSD-<version>-<arch>/All/...`), generates a landing page and
-    directory indexes, and deploys to GitHub Pages.
-
-### Resuming across the 6-hour limit
-
-Because full-system emulation is slow, a single run may not finish the whole
-package set. Each run:
-
-- **restores** the previous run's `packages/` from the Actions cache,
-- **seeds** them into the guest's `/usr/pkgsrc/packages/All` before building
-  (so `make package` skips anything already built and up to date), and
-- **saves** the (grown) `packages/` on completion — even on timeout or
-  failure (`always()`).
-
-Successive runs therefore converge to a complete build. Any package that
-cannot build within one run in a single `make package` (nothing in the
-current list) would block, since a partial compile cannot be resumed.
+   and emits a JSON matrix (architecture × version).
+2. **build** — one job per matrix entry, on `ubuntu-latest`. It restores the
+   toolchain cache, boots a NetBSD/amd64 VM via the Cross-Platform Action
+   (KVM-accelerated, `memory: 12G`, `cpu_count: 4`) and runs
+   `scripts/cross-build.sh` inside it (see *How the build works*). The built
+   vax packages are uploaded as an artifact.
+3. **deploy** — **runs only on `master`.** It merges all artifacts into one
+   tree (`NetBSD-<version>-<arch>/All/...`), generates a landing page and
+   directory indexes, and deploys to GitHub Pages. Branch pushes build and
+   upload artifacts but do not deploy.
 
 ## Setup
 
