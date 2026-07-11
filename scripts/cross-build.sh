@@ -143,46 +143,40 @@ if [ ! -f "$PKGSRCDIR/mk/bsd.pkg.mk" ]; then
     rm -f pkgsrc.tar.gz
 fi
 
-# --- 3. Derive the native platform values for the CROSS_ vars ---------------
-# pkgsrc's bsd.prefs.mk requires a CROSS_ counterpart for every entry in
-# CROSSVARS; several (LOWER_VENDOR, LOWER_OPSYS_VERSUFFIX,
-# LOWER_VARIANT_VERSION, OS_VARIANT) are empty on NetBSD but must still be
-# DEFINED or pkgsrc aborts with "USE_CROSS_COMPILE=yes but missing cross
-# variable settings" (this is exactly what sank the spike). Rather than
-# hardcode, ask this NetBSD host for its own values with a clean MAKECONF, so
-# they always match the pkgsrc version in use. The target only differs from
-# the host in MACHINE_ARCH/OBJECT_FMT/versions, which we override explicitly.
-show_native() {  # $1 = VARNAME -> prints its value on this host
+# --- 3+4. Write the pkgsrc cross mk.conf ------------------------------------
+# pkgsrc's bsd.prefs.mk requires a CROSS_<var> for EVERY entry in its
+# CROSSVARS list, or it aborts ("USE_CROSS_COMPILE=yes but missing cross
+# variable settings"). Hand-enumerating that list is fragile -- an earlier
+# attempt set CROSS_OS_VARIANT but the list actually wants
+# CROSS_LOWER_OS_VARIANT, and hand-computed CROSS_OPSYS_VERSION. Host and
+# target are both NetBSD ${TARGET_VERSION}, differing only in MACHINE_ARCH, so
+# derive every CROSS_<var> from THIS host's own value (with a clean MAKECONF
+# so our file doesn't recurse) and override only MACHINE_ARCH. Deriving the
+# whole list means a pkgsrc CROSSVARS change can't silently break us.
+# SU_CMD escalates via passwordless sudo (not su, which has no TTY). This file
+# is passed as MAKECONF ONLY on the pkgsrc make lines below -- never exported,
+# or it would leak into build.sh.
+show_native() {  # $1 = VARNAME -> its value on this host
     ( cd "$PKGSRCDIR/pkgtools/digest" && \
       env -u MAKECONF MAKECONF=/dev/null make show-var VARNAME="$1" )
 }
-CROSS_LOWER_OPSYS="$(show_native LOWER_OPSYS)"
-CROSS_LOWER_OPSYS_VERSUFFIX="$(show_native LOWER_OPSYS_VERSUFFIX)"
-CROSS_LOWER_VARIANT_VERSION="$(show_native LOWER_VARIANT_VERSION)"
-CROSS_LOWER_VENDOR="$(show_native LOWER_VENDOR)"
-CROSS_OS_VARIANT="$(show_native OS_VARIANT)"
-
-# --- 4. Write the pkgsrc cross mk.conf --------------------------------------
-# This file is passed as MAKECONF ONLY on the pkgsrc make command lines below;
-# it is NEVER exported globally (that would leak into any base `make` and, in
-# the spike design, into build.sh). SU_CMD makes pkgsrc escalate via
-# passwordless sudo instead of su.
-cat > "$PKGSRC_MAKECONF" <<EOF
-SU_CMD=/usr/bin/sudo /bin/sh -c
-USE_CROSS_COMPILE=yes
-TOOLDIR=${TOOLDIR}
-CROSS_DESTDIR=${CROSS_DESTDIR}
-CROSS_MACHINE_ARCH=${TARGET_ARCH}
-CROSS_OPSYS=NetBSD
-CROSS_OS_VERSION=${TARGET_VERSION}
-CROSS_OPSYS_VERSION=${CROSS_OPSYS_VERSION}
-CROSS_LOWER_OPSYS=${CROSS_LOWER_OPSYS}
-CROSS_LOWER_OPSYS_VERSUFFIX=${CROSS_LOWER_OPSYS_VERSUFFIX}
-CROSS_LOWER_VARIANT_VERSION=${CROSS_LOWER_VARIANT_VERSION}
-CROSS_LOWER_VENDOR=${CROSS_LOWER_VENDOR}
-CROSS_OS_VARIANT=${CROSS_OS_VARIANT}
-CROSS_OBJECT_FMT=ELF
-EOF
+{
+    echo "SU_CMD=/usr/bin/sudo /bin/sh -c"
+    echo "USE_CROSS_COMPILE=yes"
+    echo "TOOLDIR=${TOOLDIR}"
+    echo "CROSS_DESTDIR=${CROSS_DESTDIR}"
+    echo "CROSS_OBJECT_FMT=ELF"
+    # The full pkgsrc CROSSVARS list except OBJECT_FMT (set above).
+    for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
+              LOWER_OPSYS_VERSUFFIX LOWER_VARIANT_VERSION LOWER_VENDOR \
+              LOWER_OS_VARIANT MACHINE_ARCH; do
+        if [ "$_v" = MACHINE_ARCH ]; then
+            echo "CROSS_MACHINE_ARCH=${TARGET_ARCH}"
+        else
+            echo "CROSS_${_v}=$(show_native "$_v")"
+        fi
+    done
+} > "$PKGSRC_MAKECONF"
 echo "===== pkgsrc mk.conf ====="
 cat "$PKGSRC_MAKECONF"
 
