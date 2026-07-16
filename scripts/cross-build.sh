@@ -178,15 +178,33 @@ show_native() {  # $1 = VARNAME -> its value on this host
     echo "TOOLDIR=${TOOLDIR}"
     echo "CROSS_DESTDIR=${CROSS_DESTDIR}"
     echo "CROSS_OBJECT_FMT=ELF"
-    # The full pkgsrc CROSSVARS list except OBJECT_FMT (set above).
+    echo "TARGET_OBJECT_FMT=ELF"
+    # The full pkgsrc CROSSVARS list except OBJECT_FMT (set above). For each we
+    # emit BOTH CROSS_<var> and TARGET_<var> with the same value.
+    #
+    # CROSS_<var> drives the ordinary target cross-build. TARGET_<var> is what
+    # cross/cross-libtool-base needs: it declares LIBTOOL_CROSS_COMPILE=yes,
+    # which makes bsd.prefs.mk run its "switcheroo" -- `${_v_}=${TARGET_${_v_}}`
+    # for every CROSSVARS entry -- so the package is BUILT natively but NAMED
+    # for the target. If TARGET_MACHINE_ARCH is unset there, MACHINE_ARCH (hence
+    # MACHINE_PLATFORM) comes out empty, so its PKGNAME/WRKDIR degrade to
+    # `NetBSD-10.1-` and pkg_add can't find the built pkg (the sudo/rsync
+    # blocker). pkgsrc is *supposed* to pass TARGET_* into the tool-dep build
+    # via CROSSTARGETSETTINGS, but that doesn't reach cross-libtool-base under
+    # our top-level `make package DEPENDS_TARGET=package-install`; setting
+    # TARGET_* in mk.conf makes it robust regardless of that propagation.
+    # Host and target are the same NetBSD ${TARGET_VERSION}, differing only in
+    # MACHINE_ARCH, so TARGET_<var> == the native value except the arch.
     for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
               LOWER_OPSYS_VERSUFFIX LOWER_VARIANT_VERSION LOWER_VENDOR \
               LOWER_OS_VARIANT MACHINE_ARCH; do
         if [ "$_v" = MACHINE_ARCH ]; then
-            echo "CROSS_MACHINE_ARCH=${TARGET_ARCH}"
+            _val="${TARGET_ARCH}"
         else
-            echo "CROSS_${_v}=$(show_native "$_v")"
+            _val="$(show_native "$_v")"
         fi
+        echo "CROSS_${_v}=${_val}"
+        echo "TARGET_${_v}=${_val}"
     done
 } > "$PKGSRC_MAKECONF"
 echo "===== pkgsrc mk.conf ====="
@@ -208,6 +226,20 @@ assert_var() {  # $1=VARNAME  $2=expected-substring
 assert_var SU_CMD sudo
 assert_var MACHINE_ARCH "$TARGET_ARCH"
 assert_var USE_CROSS_COMPILE yes
+
+# cross/cross-libtool-base is the sudo/rsync blocker: its LIBTOOL_CROSS_COMPILE
+# switcheroo derives MACHINE_PLATFORM from TARGET_MACHINE_ARCH, so confirm that
+# resolves to a target-arch platform (not the empty `NetBSD-<ver>-`) before we
+# spend a package build discovering it the hard way.
+if [ -d "$PKGSRCDIR/cross/cross-libtool-base" ]; then
+    _p="$( cd "$PKGSRCDIR/cross/cross-libtool-base" && \
+           make show-var VARNAME=MACHINE_PLATFORM MAKECONF="$PKGSRC_MAKECONF" )"
+    echo "cross-libtool-base MACHINE_PLATFORM = [$_p]"
+    case "$_p" in
+        *-"$TARGET_ARCH") : ;;
+        *) echo "FATAL: cross-libtool-base MACHINE_PLATFORM [$_p] does not end in -$TARGET_ARCH (TARGET_MACHINE_ARCH unset?)"; exit 1 ;;
+    esac
+fi
 echo "cross-config OK"
 
 # --- 6. Cross-build each requested origin -----------------------------------

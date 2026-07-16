@@ -47,29 +47,47 @@ Cache-hit runs are ~3 min to reach packages; the native tool closure (perl,
 bison, texinfo, libtool-base) rebuilds each run (~16 min) — candidate for a
 second cache layer.
 
-## The remaining blocker
-`sudo` and `rsync` both die building `cross/cross-libtool-base`:
+## The remaining blocker — DIAGNOSED & FIX PUSHED (awaiting CI)
+`sudo` and `rsync` both died building `cross/cross-libtool-base`:
 
     pkg_add: Can't process .../cross/cross-libtool-base/work.NetBSD-10.1-/.packages/cross-libtool-base-NetBSD-10*: No such file or directory
 
-Root cause: that package's `PKGNAME=${DISTNAME:S/^libtool-/cross-libtool-base-${MACHINE_PLATFORM}-/}`
-and `MACHINE_PLATFORM` = `OPSYS-OS_VERSION-MACHINE_ARCH` resolves to
-`NetBSD-10.1-` — **`MACHINE_ARCH` is empty** when this package is evaluated, so
-the work dir / package name are malformed and pkg_add can't find the built pkg.
-`cross/cross-libtool-base` is pkgsrc's self-described "kludgerific copypasta"
-cross-libtool corner.
+**Root cause (confirmed against pkgsrc-trunk source, not guessed):**
+`cross/cross-libtool-base/Makefile` sets `LIBTOOL_CROSS_COMPILE=yes`. That flag
+makes `mk/bsd.prefs.mk` run its cross-libtool "switcheroo":
+
+    .if ${LIBTOOL_CROSS_COMPILE:U:tl} == "yes"
+    .  for _v_ in ${CROSSVARS}
+    ${_v_}=  ${TARGET_${_v_}}      # MACHINE_ARCH := ${TARGET_MACHINE_ARCH}, etc.
+    .  endfor
+
+i.e. the package is *built natively but named for the target*, taking its
+`MACHINE_ARCH` (hence `MACHINE_PLATFORM`, hence `PKGNAME`/`WRKDIR`) from
+`TARGET_MACHINE_ARCH`. We never set `TARGET_MACHINE_ARCH`, so it expanded to
+empty → `MACHINE_PLATFORM=NetBSD-10.1-` → malformed pkg. (bsd.prefs.mk even has
+`PKG_FAIL_REASON+= "Must set TARGET_MACHINE_ARCH for cross-libtool."` for this.)
+
+pkgsrc is *supposed* to feed `TARGET_*` into the tool-dep build via
+`CROSSTARGETSETTINGS` (`mk/pkgformat/pkg/depends.mk` builds it from the parent's
+CROSSVARS), but under our top-level `make package DEPENDS_TARGET=package-install`
+that didn't reach `cross-libtool-base`. bash never hit this because it has no
+`USE_LIBTOOL`; sudo/rsync do, and `mk/bsd.pkg.use.mk` swaps in
+`cross-libtool-base` as a `TOOL_DEPENDS` under `USE_CROSS_COMPILE=yes`.
+
+**Fix (commit on `cross-build`):** `scripts/cross-build.sh` now writes, for every
+CROSSVARS entry, BOTH `CROSS_<var>` and `TARGET_<var>` (same value; arch=vax)
+plus `TARGET_OBJECT_FMT=ELF` into mk.conf — so cross-libtool-base always sees
+`TARGET_MACHINE_ARCH=vax` regardless of the CROSSTARGETSETTINGS propagation. A
+fast pre-build assertion now checks `cross/cross-libtool-base`'s
+`MACHINE_PLATFORM` ends in `-vax` and aborts in seconds otherwise.
 
 ## Next steps (candidates)
-1. Probe why `MACHINE_ARCH` (hence `MACHINE_PLATFORM`) is empty specifically for
-   `cross/cross-libtool-base` — likely an interaction between the recursive
-   native-tool build (`USE_CROSS_COMPILE=no`) and our derived `CROSS_*` vars.
-   Fast probe: in the guest, `cd cross/cross-libtool-base && make show-var
-   VARNAME=MACHINE_ARCH` (and `MACHINE_PLATFORM`, `USE_CROSS_COMPILE`) with our
-   mk.conf as MAKECONF.
-2. Or sidestep pkgsrc's cross-libtool for sudo/rsync (use the sysroot's libtool
-   / a `LIBTOOL`-related override) so they don't pull `cross-libtool-base`.
-3. Add a second cache layer for the native tool closure to speed iteration.
-4. Once sudo/rsync build: confirm all three `.tgz` are `MACHINE_ARCH=vax`, wire
+1. Verify the pushed fix on CI: watch that the `cross-config` assertion prints
+   `cross-libtool-base MACHINE_PLATFORM = [NetBSD-10.1-vax]` and that sudo+rsync
+   build to completion.
+2. Add a second cache layer for the native tool closure (perl/bison/texinfo/
+   libtool ~16 min/run) to speed iteration.
+3. Once sudo/rsync build: confirm all three `.tgz` are `MACHINE_ARCH=vax`, wire
    collection/upload, then consider re-adding `curl` (cross removes its
    perl/openssl blocker).
 
