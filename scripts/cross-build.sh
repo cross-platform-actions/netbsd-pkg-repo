@@ -165,6 +165,27 @@ show_native() {  # $1 = VARNAME -> its value on this host
     ( cd "$PKGSRCDIR/pkgtools/digest" && \
       env -u MAKECONF MAKECONF=/dev/null make show-var VARNAME="$1" )
 }
+# TARGET_* are passed on the make COMMAND LINE (see below), NOT written to
+# mk.conf. cross/cross-libtool-base needs them: it declares
+# LIBTOOL_CROSS_COMPILE=yes, which makes bsd.prefs.mk run its "switcheroo" --
+# `${_v_}=${TARGET_${_v_}}` for every CROSSVARS entry -- so the package is
+# BUILT natively but NAMED for the target. With TARGET_MACHINE_ARCH unset there
+# MACHINE_ARCH (hence MACHINE_PLATFORM) comes out empty and its PKGNAME/WRKDIR
+# degrade to `NetBSD-10.1-`, so pkg_add can't find the built pkg -- the exact
+# sudo/rsync blocker. pkgsrc is *supposed* to pass these into the tool-dep
+# build via CROSSTARGETSETTINGS, but that doesn't reach cross-libtool-base
+# under our top-level `make package DEPENDS_TARGET=package-install`.
+#
+# They MUST be command-line (or env) vars, not mk.conf entries: bsd.prefs.mk's
+# `.ifdef TARGET_MACHINE_ARCH` block -- which DEFINES TARGET_MACHINE_GNU_ARCH
+# etc. -- runs *before* it loads MAKECONF, but a later conditional references
+# ${TARGET_MACHINE_GNU_ARCH}. A TARGET_* arriving via mk.conf is too late: the
+# derived var stays empty and make dies with "Malformed conditional". A
+# command-line assignment is present at startup, so the block defines it.
+# Command-line vars also propagate to the cross-libtool-base tool-dep build via
+# ${MAKEFLAGS}. Host and target are the same NetBSD ${TARGET_VERSION} differing
+# only in MACHINE_ARCH, so each TARGET_<var> == the native value except arch.
+TARGET_VARS="TARGET_OBJECT_FMT=ELF"
 {
     echo "SU_CMD=${SUDO} /bin/sh -c"
     # NOTE the ?= (per pkgsrc's HOWTO-use-crosscompile): it's a DEFAULT, not a
@@ -178,23 +199,11 @@ show_native() {  # $1 = VARNAME -> its value on this host
     echo "TOOLDIR=${TOOLDIR}"
     echo "CROSS_DESTDIR=${CROSS_DESTDIR}"
     echo "CROSS_OBJECT_FMT=ELF"
-    echo "TARGET_OBJECT_FMT=ELF"
-    # The full pkgsrc CROSSVARS list except OBJECT_FMT (set above). For each we
-    # emit BOTH CROSS_<var> and TARGET_<var> with the same value.
-    #
-    # CROSS_<var> drives the ordinary target cross-build. TARGET_<var> is what
-    # cross/cross-libtool-base needs: it declares LIBTOOL_CROSS_COMPILE=yes,
-    # which makes bsd.prefs.mk run its "switcheroo" -- `${_v_}=${TARGET_${_v_}}`
-    # for every CROSSVARS entry -- so the package is BUILT natively but NAMED
-    # for the target. If TARGET_MACHINE_ARCH is unset there, MACHINE_ARCH (hence
-    # MACHINE_PLATFORM) comes out empty, so its PKGNAME/WRKDIR degrade to
-    # `NetBSD-10.1-` and pkg_add can't find the built pkg (the sudo/rsync
-    # blocker). pkgsrc is *supposed* to pass TARGET_* into the tool-dep build
-    # via CROSSTARGETSETTINGS, but that doesn't reach cross-libtool-base under
-    # our top-level `make package DEPENDS_TARGET=package-install`; setting
-    # TARGET_* in mk.conf makes it robust regardless of that propagation.
-    # Host and target are the same NetBSD ${TARGET_VERSION}, differing only in
-    # MACHINE_ARCH, so TARGET_<var> == the native value except the arch.
+    # The full pkgsrc CROSSVARS list except OBJECT_FMT (set above). Deriving
+    # every CROSS_<var> from THIS host and overriding only MACHINE_ARCH means a
+    # pkgsrc CROSSVARS change can't silently leave one missing (bsd.prefs.mk
+    # aborts on any absent CROSS_<var>). This `{ }` group is not a subshell, so
+    # the TARGET_VARS appended inside it persists for the make lines below.
     for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
               LOWER_OPSYS_VERSUFFIX LOWER_VARIANT_VERSION LOWER_VENDOR \
               LOWER_OS_VARIANT MACHINE_ARCH; do
@@ -204,11 +213,13 @@ show_native() {  # $1 = VARNAME -> its value on this host
             _val="$(show_native "$_v")"
         fi
         echo "CROSS_${_v}=${_val}"
-        echo "TARGET_${_v}=${_val}"
+        TARGET_VARS="${TARGET_VARS} TARGET_${_v}=${_val}"
     done
 } > "$PKGSRC_MAKECONF"
 echo "===== pkgsrc mk.conf ====="
 cat "$PKGSRC_MAKECONF"
+echo "===== TARGET_* (make command-line) ====="
+echo "$TARGET_VARS"
 
 # --- 5. Early assertion: pkgsrc honours the cross config --------------------
 # Cheap (seconds) sanity check BEFORE building packages, so a mis-wired
@@ -216,7 +227,7 @@ cat "$PKGSRC_MAKECONF"
 echo "===== pkgsrc cross-config resolution ====="
 assert_var() {  # $1=VARNAME  $2=expected-substring
     _v="$( cd "$PKGSRCDIR/pkgtools/digest" && \
-           make show-var VARNAME="$1" MAKECONF="$PKGSRC_MAKECONF" )"
+           make show-var VARNAME="$1" MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
     echo "$1 = [$_v]"
     case "$_v" in
         *"$2"*) : ;;
@@ -233,7 +244,7 @@ assert_var USE_CROSS_COMPILE yes
 # spend a package build discovering it the hard way.
 if [ -d "$PKGSRCDIR/cross/cross-libtool-base" ]; then
     _p="$( cd "$PKGSRCDIR/cross/cross-libtool-base" && \
-           make show-var VARNAME=MACHINE_PLATFORM MAKECONF="$PKGSRC_MAKECONF" )"
+           make show-var VARNAME=MACHINE_PLATFORM MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
     echo "cross-libtool-base MACHINE_PLATFORM = [$_p]"
     case "$_p" in
         *-"$TARGET_ARCH") : ;;
@@ -263,7 +274,7 @@ while IFS= read -r origin || [ -n "$origin" ]; do
     fi
     if ( cd "$PKGSRCDIR/$origin" && \
          make package BATCH=yes DEPENDS_TARGET=package-install \
-              MAKECONF="$PKGSRC_MAKECONF" ); then
+              MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS ); then
         echo "CROSS BUILD OK: $origin"
     else
         echo "CROSS BUILD FAILED: $origin" >&2
@@ -271,7 +282,7 @@ while IFS= read -r origin || [ -n "$origin" ]; do
     fi
     # Free work trees (deps included) between origins to bound disk use.
     ( cd "$PKGSRCDIR/$origin" && \
-      make clean CLEANDEPENDS=yes MAKECONF="$PKGSRC_MAKECONF" ) \
+      make clean CLEANDEPENDS=yes MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS ) \
         >/dev/null 2>&1 || true
 done < "$SCRIPT_DIR/../config/pkglist"
 

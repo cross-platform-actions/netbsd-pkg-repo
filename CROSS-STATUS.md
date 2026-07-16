@@ -74,12 +74,22 @@ that didn't reach `cross-libtool-base`. bash never hit this because it has no
 `USE_LIBTOOL`; sudo/rsync do, and `mk/bsd.pkg.use.mk` swaps in
 `cross-libtool-base` as a `TOOL_DEPENDS` under `USE_CROSS_COMPILE=yes`.
 
-**Fix (commit on `cross-build`):** `scripts/cross-build.sh` now writes, for every
-CROSSVARS entry, BOTH `CROSS_<var>` and `TARGET_<var>` (same value; arch=vax)
-plus `TARGET_OBJECT_FMT=ELF` into mk.conf — so cross-libtool-base always sees
+**Fix (commits on `cross-build`):** `scripts/cross-build.sh` now supplies, for
+every CROSSVARS entry, `TARGET_<var>` (same value as `CROSS_<var>`; arch=vax)
+plus `TARGET_OBJECT_FMT=ELF` — so cross-libtool-base always sees
 `TARGET_MACHINE_ARCH=vax` regardless of the CROSSTARGETSETTINGS propagation. A
-fast pre-build assertion now checks `cross/cross-libtool-base`'s
-`MACHINE_PLATFORM` ends in `-vax` and aborts in seconds otherwise.
+fast pre-build assertion checks `cross/cross-libtool-base`'s `MACHINE_PLATFORM`
+ends in `-vax` and aborts in seconds otherwise.
+
+**Subtlety (2nd commit):** `TARGET_*` must be passed on the make COMMAND LINE,
+NOT in mk.conf. bsd.prefs.mk's `.ifdef TARGET_MACHINE_ARCH` block — which
+*defines* `TARGET_MACHINE_GNU_ARCH` — runs BEFORE it loads MAKECONF, but a
+later conditional (`.if defined(TARGET_MACHINE_ARCH) && … ${TARGET_MACHINE_GNU_ARCH} == "arm" …`)
+references it. A `TARGET_*` arriving via mk.conf is too late → the derived var
+stays empty → `make: Malformed conditional`. Command-line assignments are
+present at startup (so the block defines the GNU-arch var) and propagate to the
+cross-libtool-base tool-dep build via `${MAKEFLAGS}`. The script builds a
+`TARGET_VARS` string and appends it to every pkgsrc make line.
 
 ## Next steps (candidates)
 1. Verify the pushed fix on CI: watch that the `cross-config` assertion prints
