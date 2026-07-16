@@ -12,8 +12,12 @@
 # Lines starting with # and blank lines are ignored.
 shells/bash
 net/rsync
-# Re-enabled for a diagnostic run: sudo's own configure dies with "cannot run C
-# compiled programs" (nested configure not told --build). The build loop now
-# dumps config.log on failure so this run reveals the cause. If it still fails,
-# re-park with `#security/sudo`; see CROSS-STATUS.md.
-security/sudo
+
+# PARKED -- see CROSS-STATUS.md "sudo". Diagnosed via config.log (run
+# 29485406404): sudo's configure runs a SECOND AC_PROG_CC for a native BUILD
+# compiler, but plain `gcc` in the cross build is the pkgsrc wrapper pointing at
+# the vax cross-compiler, so the build-compiler sanity check compiles a vax
+# binary that can't run on amd64 -> "cannot run C compiled programs". Needs a
+# real native build compiler wired into sudo's configure; bash and rsync
+# cross-build cleanly, so sudo stays parked to keep the pipeline green.
+#security/sudo

@@ -12,7 +12,7 @@ resume mid-build, so it never converges. Cross-compiling builds the entire
 build-tool closure (perl, texinfo, bison, libtool, libnbcompat…) **natively for
 amd64** and only cross-compiles the target's own code — no emulated perl.
 
-## Status: cross-libtool-base blocker SOLVED; bash + rsync build GREEN; sudo WIP
+## Status: cross-libtool-base blocker SOLVED; bash + rsync build GREEN; sudo parked (diagnosed)
 - ✅ GREEN end-to-end run 29483870530 (build job success; deploy skipped on
   branch). Published vax set: `bash-5.3.15`, `rsync-3.4.4`, plus rsync's vax
   runtime deps `lz4`, `popt`, `xxhash`, `zstd` — host tool closure excluded.
@@ -119,16 +119,33 @@ from a built origin, collects every `.tgz` there (target + any vax runtime
 deps), verifies each requested origin's `PKGNAME` is present and vax, and
 publishes those to `$WORKSPACE/packages/All`.
 
-## sudo (the remaining package)
-`sudo`'s top-level configure detects cross-compiling correctly, but a NESTED
-configure it spawns dies: `configure: error: cannot run C compiled programs. If
-you meant to cross compile, use '--build'.` The inner configure isn't given
-`--build`, so autoconf thinks it's native and tries to run a vax test binary on
-amd64. Next probes: capture the failing `config.log`; check whether sudo uses
-`AC_CONFIG_SUBDIRS`/a bundled lib whose configure loses `--build`; try adding
-`CONFIGURE_ARGS+=--build=${MACHINE_GNU_PLATFORM}` (or the pkgsrc cross
-`--build`) and/or `CONFIG_SITE`. rsync (also libtool) works, so this is
-sudo-specific, not an infra gap.
+## sudo (the remaining package) — DIAGNOSED (run 29485406404 config.log dump)
+`sudo`'s configure resolves the TARGET compiler fine (`vax--netbsdelf-gcc`,
+`cross compiling... yes`). It then runs a SECOND `AC_PROG_CC` for a NATIVE
+**build** compiler (to build host-side codegen tools):
+
+    checking for vax--netbsdelf-gcc... vax--netbsdelf-gcc
+    checking whether we are cross compiling... yes        # target CC: OK
+    checking for x86_64--netbsd-gcc... no                 # looks for a build CC
+    checking for gcc... gcc                                # falls back to plain gcc
+    checking whether we are cross compiling... configure: error: cannot run C compiled programs.
+
+The trap: in a pkgsrc cross build, plain `gcc` on PATH is the pkgsrc compiler
+WRAPPER, which points at the vax cross-compiler. So sudo's build-compiler
+sanity check compiles a *vax* binary and can't run it on amd64 → error 77.
+bash/rsync never look for a separate build compiler, so only sudo hits this.
+
+Candidate fixes (each ~20-min CI round-trip; the build loop now dumps
+config.log on failure to speed this):
+1. Provide a REAL native build compiler where sudo looks for it, e.g. a
+   `x86_64--netbsd-gcc` (build_alias-prefixed) on PATH -> `/usr/bin/gcc` (the
+   NetBSD base native gcc, NOT the wrapper). sudo's search finds it and skips
+   the plain-`gcc`(=wrapper) fallback.
+2. Or set the right build-CC var in CONFIGURE_ENV (sudo uses an AC_PROG_CC for
+   build; identify its cache/var name from config.log — `CC_FOR_BUILD`/
+   `BUILD_CC`/`ac_cv_prog_*`) to `/usr/bin/gcc`.
+3. Check whether pkgsrc already exposes a native build-compiler knob for cross
+   (grep mk/ for CC_FOR_BUILD / BUILD_CC / NATIVE_CC) and wire that through.
 
 ## Next steps (candidates)
 1. Confirm the current run goes GREEN (bash + rsync published; deploy skipped on
