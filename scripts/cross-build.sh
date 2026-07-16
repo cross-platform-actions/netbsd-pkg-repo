@@ -311,6 +311,14 @@ while IFS= read -r origin || [ -n "$origin" ]; do
     else
         echo "CROSS BUILD FAILED: $origin" >&2
         failed="$failed $origin"
+        # Surface config.log context so a cross-configure failure (e.g. "cannot
+        # run C compiled programs") is diagnosable from this run's log without
+        # another ~20-min CI round-trip. There can be several (nested configs);
+        # show the error-bearing tail of each.
+        find "$PKGSRCDIR/$origin"/work* -name config.log 2>/dev/null | while IFS= read -r _cl; do
+            echo "----- config.log: $_cl (last 40 lines) -----"
+            tail -n 40 "$_cl" 2>/dev/null || true
+        done
     fi
     # Free work trees (deps included) between origins to bound disk use.
     ( cd "$PKGSRCDIR/$origin" && \

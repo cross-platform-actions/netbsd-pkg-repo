@@ -12,7 +12,10 @@ resume mid-build, so it never converges. Cross-compiling builds the entire
 build-tool closure (perl, texinfo, bison, libtool, libnbcompat…) **natively for
 amd64** and only cross-compiles the target's own code — no emulated perl.
 
-## Status: cross-libtool-base blocker SOLVED; bash + rsync build; sudo parked
+## Status: cross-libtool-base blocker SOLVED; bash + rsync build GREEN; sudo WIP
+- ✅ GREEN end-to-end run 29483870530 (build job success; deploy skipped on
+  branch). Published vax set: `bash-5.3.15`, `rsync-3.4.4`, plus rsync's vax
+  runtime deps `lz4`, `popt`, `xxhash`, `zstd` — host tool closure excluded.
 - ✅ `bash-5.3.15` and `rsync-3.4.4` **cross-built for vax** (run 29482043027).
 - ✅ The `cross/cross-libtool-base` blocker that stopped both libtool-using
   packages is fully fixed (three-part fix below). rsync now cross-builds clean.
