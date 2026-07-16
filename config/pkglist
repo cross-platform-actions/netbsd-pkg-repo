@@ -13,11 +13,10 @@
 shells/bash
 net/rsync
 
-# PARKED -- see CROSS-STATUS.md "sudo". Diagnosed via config.log (run
-# 29485406404): sudo's configure runs a SECOND AC_PROG_CC for a native BUILD
-# compiler, but plain `gcc` in the cross build is the pkgsrc wrapper pointing at
-# the vax cross-compiler, so the build-compiler sanity check compiles a vax
-# binary that can't run on amd64 -> "cannot run C compiled programs". Needs a
-# real native build compiler wired into sudo's configure; bash and rsync
-# cross-build cleanly, so sudo stays parked to keep the pipeline green.
-#security/sudo
+# sudo's configure runs a SECOND compiler probe (AX_PROG_CC_FOR_BUILD-style)
+# for a native BUILD compiler; plain `gcc` in the cross build is the pkgsrc
+# wrapper pointing at the vax cross-compiler, so the build-compiler sanity check
+# compiled a vax binary that can't run on amd64 -> "cannot run C compiled
+# programs". Fixed by feeding a real native amd64 CC_FOR_BUILD=/usr/bin/gcc (by
+# absolute path, bypassing the wrapper) via CONFIGURE_ENV in cross-build.sh.
+security/sudo

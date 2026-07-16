@@ -210,11 +210,41 @@ for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
     TARGET_VARS="${TARGET_VARS} TARGET_${_v}=${_val}"
 done
 
+# --- Native build compiler for AX_PROG_CC_FOR_BUILD (the sudo blocker) ------
+# sudo's configure resolves the TARGET compiler fine, then runs a SECOND probe
+# (an AX_PROG_CC_FOR_BUILD-style macro) for a NATIVE *build* compiler to build
+# host-side codegen tools. It searches ${build_alias}-gcc (x86_64--netbsd-gcc,
+# which does not exist) and falls back to bare `gcc` -- but under a pkgsrc cross
+# build `gcc` on PATH is the pkgsrc WRAPPER pointing at the vax cross-compiler,
+# so the macro's "can it run a compiled program?" check runs a vax binary on the
+# amd64 host and dies with "cannot run C compiled programs" (configure exit 77).
+# Give that probe a real native amd64 compiler via CC_FOR_BUILD, by ABSOLUTE
+# path -- an absolute path bypasses the pkgsrc wrapper, which only intercepts the
+# bare name on PATH. AC_CHECK_PROGS(CC_FOR_BUILD, ...) keeps a pre-set value, so
+# the env var wins over the ${build_alias}-gcc/gcc search. bash/rsync never probe
+# a build compiler so only sudo needs this, but a native build CC is correct for
+# ANY cross package -> set it globally via CONFIGURE_ENV.
+BUILD_CC=/usr/bin/gcc
+[ -x "$BUILD_CC" ] || BUILD_CC=/usr/bin/cc
+BUILD_CPP=/usr/bin/cpp
+BUILD_CXX=/usr/bin/g++
+[ -x "$BUILD_CXX" ] || BUILD_CXX=/usr/bin/c++
+echo "===== native build compiler (CC_FOR_BUILD) ====="
+ls -l /usr/bin/gcc /usr/bin/cc /usr/bin/g++ /usr/bin/c++ /usr/bin/cpp 2>/dev/null || true
+"$BUILD_CC" --version 2>&1 | head -n 1 || true
+
 {
     # SU_CMD escalates to root for package-install (via passwordless sudo, not
     # su, which has no TTY). The `env ${TARGET_VARS}` wrapper carries TARGET_*
     # into the root make -- see the block comment above.
     echo "SU_CMD=${SUDO} /usr/bin/env ${TARGET_VARS} /bin/sh -c"
+    # Feed sudo's build-compiler probe (AX_PROG_CC_FOR_BUILD) a NATIVE amd64
+    # compiler by absolute path so it doesn't fall back to the pkgsrc cross
+    # wrapper -- see the BUILD_CC block above. Values are single tokens (no
+    # embedded spaces) because CONFIGURE_ENV is a space-split token list.
+    echo "CONFIGURE_ENV+=CC_FOR_BUILD=${BUILD_CC}"
+    echo "CONFIGURE_ENV+=CPP_FOR_BUILD=${BUILD_CPP}"
+    echo "CONFIGURE_ENV+=CXX_FOR_BUILD=${BUILD_CXX}"
     # NOTE the ?= (per pkgsrc's HOWTO-use-crosscompile): it's a DEFAULT, not a
     # force. Target packages cross-build, but pkgsrc recursively sets
     # USE_CROSS_COMPILE=no for bootstrap/tool dependencies that must run on the
