@@ -165,29 +165,56 @@ show_native() {  # $1 = VARNAME -> its value on this host
     ( cd "$PKGSRCDIR/pkgtools/digest" && \
       env -u MAKECONF MAKECONF=/dev/null make show-var VARNAME="$1" )
 }
-# TARGET_* are passed on the make COMMAND LINE (see below), NOT written to
-# mk.conf. cross/cross-libtool-base needs them: it declares
+# cross/cross-libtool-base is why sudo/rsync need TARGET_*: it declares
 # LIBTOOL_CROSS_COMPILE=yes, which makes bsd.prefs.mk run its "switcheroo" --
 # `${_v_}=${TARGET_${_v_}}` for every CROSSVARS entry -- so the package is
 # BUILT natively but NAMED for the target. With TARGET_MACHINE_ARCH unset there
 # MACHINE_ARCH (hence MACHINE_PLATFORM) comes out empty and its PKGNAME/WRKDIR
 # degrade to `NetBSD-10.1-`, so pkg_add can't find the built pkg -- the exact
-# sudo/rsync blocker. pkgsrc is *supposed* to pass these into the tool-dep
-# build via CROSSTARGETSETTINGS, but that doesn't reach cross-libtool-base
-# under our top-level `make package DEPENDS_TARGET=package-install`.
+# sudo/rsync blocker.
 #
-# They MUST be command-line (or env) vars, not mk.conf entries: bsd.prefs.mk's
-# `.ifdef TARGET_MACHINE_ARCH` block -- which DEFINES TARGET_MACHINE_GNU_ARCH
-# etc. -- runs *before* it loads MAKECONF, but a later conditional references
-# ${TARGET_MACHINE_GNU_ARCH}. A TARGET_* arriving via mk.conf is too late: the
-# derived var stays empty and make dies with "Malformed conditional". A
-# command-line assignment is present at startup, so the block defines it.
-# Command-line vars also propagate to the cross-libtool-base tool-dep build via
-# ${MAKEFLAGS}. Host and target are the same NetBSD ${TARGET_VERSION} differing
-# only in MACHINE_ARCH, so each TARGET_<var> == the native value except arch.
+# TARGET_* must reach cross-libtool-base in TWO places, each with its own trap:
+#
+#  * Its BUILD make: pkgsrc's own CROSSTARGETSETTINGS passes TARGET_* here as
+#    ENV, so the build already gets them. We ALSO pass them on the make command
+#    line (TARGET_VARS, below) -- present at make startup, which matters because
+#    bsd.prefs.mk's `.ifdef TARGET_MACHINE_ARCH` block (which DEFINES
+#    TARGET_MACHINE_GNU_ARCH etc.) runs BEFORE it loads MAKECONF, yet a later
+#    conditional references ${TARGET_MACHINE_GNU_ARCH}. A TARGET_* arriving via
+#    mk.conf would be too late -> empty derived var -> "Malformed conditional".
+#
+#  * Its ROOT INSTALL re-make (DEPENDS_TARGET=package-install escalates via
+#    SU_CMD): pkgsrc only re-passes a CURATED set across the su boundary
+#    (MAKECONF via PKGSRC_MAKE_ENV, USE_CROSS_COMPILE in _ROOT_CMD) -- NOT
+#    TARGET_*, and sudo resets the environment, so the root make loses them and
+#    the install path degrades to `NetBSD-10.1-` again. So bake TARGET_* into
+#    SU_CMD via `env` INSIDE the sudo call (`sudo env TARGET_...=... /bin/sh -c`):
+#    env's args survive sudo's env reset, whereas a plain prefix before sudo
+#    would be stripped. Present at the root make's startup, so its .ifdef block
+#    defines the derived vars too.
+#
+# Host and target are the same NetBSD ${TARGET_VERSION} differing only in
+# MACHINE_ARCH, so each TARGET_<var> == the native value except the arch.
 TARGET_VARS="TARGET_OBJECT_FMT=ELF"
+CROSS_LINES=""
+for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
+          LOWER_OPSYS_VERSUFFIX LOWER_VARIANT_VERSION LOWER_VENDOR \
+          LOWER_OS_VARIANT MACHINE_ARCH; do
+    if [ "$_v" = MACHINE_ARCH ]; then
+        _val="${TARGET_ARCH}"
+    else
+        _val="$(show_native "$_v")"
+    fi
+    CROSS_LINES="${CROSS_LINES}CROSS_${_v}=${_val}
+"
+    TARGET_VARS="${TARGET_VARS} TARGET_${_v}=${_val}"
+done
+
 {
-    echo "SU_CMD=${SUDO} /bin/sh -c"
+    # SU_CMD escalates to root for package-install (via passwordless sudo, not
+    # su, which has no TTY). The `env ${TARGET_VARS}` wrapper carries TARGET_*
+    # into the root make -- see the block comment above.
+    echo "SU_CMD=${SUDO} /usr/bin/env ${TARGET_VARS} /bin/sh -c"
     # NOTE the ?= (per pkgsrc's HOWTO-use-crosscompile): it's a DEFAULT, not a
     # force. Target packages cross-build, but pkgsrc recursively sets
     # USE_CROSS_COMPILE=no for bootstrap/tool dependencies that must run on the
@@ -202,23 +229,12 @@ TARGET_VARS="TARGET_OBJECT_FMT=ELF"
     # The full pkgsrc CROSSVARS list except OBJECT_FMT (set above). Deriving
     # every CROSS_<var> from THIS host and overriding only MACHINE_ARCH means a
     # pkgsrc CROSSVARS change can't silently leave one missing (bsd.prefs.mk
-    # aborts on any absent CROSS_<var>). This `{ }` group is not a subshell, so
-    # the TARGET_VARS appended inside it persists for the make lines below.
-    for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
-              LOWER_OPSYS_VERSUFFIX LOWER_VARIANT_VERSION LOWER_VENDOR \
-              LOWER_OS_VARIANT MACHINE_ARCH; do
-        if [ "$_v" = MACHINE_ARCH ]; then
-            _val="${TARGET_ARCH}"
-        else
-            _val="$(show_native "$_v")"
-        fi
-        echo "CROSS_${_v}=${_val}"
-        TARGET_VARS="${TARGET_VARS} TARGET_${_v}=${_val}"
-    done
+    # aborts on any absent CROSS_<var>).
+    printf '%s' "$CROSS_LINES"
 } > "$PKGSRC_MAKECONF"
 echo "===== pkgsrc mk.conf ====="
 cat "$PKGSRC_MAKECONF"
-echo "===== TARGET_* (make command-line) ====="
+echo "===== TARGET_* (make command-line + SU_CMD env) ====="
 echo "$TARGET_VARS"
 
 # --- 5. Early assertion: pkgsrc honours the cross config --------------------
@@ -261,6 +277,7 @@ echo "cross-config OK"
 # failures so the job exits non-zero: a green run must mean every origin built.
 mkdir -p "$PACKAGES_DIR/All"
 failed=""
+target_pkgs=""
 while IFS= read -r origin || [ -n "$origin" ]; do
     case "$origin" in ''|\#*) continue ;; esac
     # Trim surrounding whitespace.
@@ -276,6 +293,14 @@ while IFS= read -r origin || [ -n "$origin" ]; do
          make package BATCH=yes DEPENDS_TARGET=package-install \
               MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS ); then
         echo "CROSS BUILD OK: $origin"
+        # Record the expected package name so step 7 can require it to exist as
+        # a $TARGET_ARCH package. The build also drops the native tool-closure
+        # packages (perl, bison, libtool-base...) into packages/All; those are
+        # host tools, not ours to verify or publish.
+        _pkgname="$( cd "$PKGSRCDIR/$origin" && \
+                     make show-var VARNAME=PKGNAME \
+                          MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
+        target_pkgs="$target_pkgs $_pkgname"
     else
         echo "CROSS BUILD FAILED: $origin" >&2
         failed="$failed $origin"
@@ -287,30 +312,52 @@ while IFS= read -r origin || [ -n "$origin" ]; do
 done < "$SCRIPT_DIR/../config/pkglist"
 
 # --- 7. Confirm target arch and generate the summary index ------------------
+# The build populated packages/All with BOTH our cross-built $TARGET_ARCH
+# packages AND the native (host) build-tool closure (perl, bison, libtool...,
+# MACHINE_ARCH=x86_64 -- including cross-libtool-base, which is NAMED for the
+# target but is a host binary). Only the $TARGET_ARCH packages belong in the
+# repo, so partition by arch: publish the target ones, skip the host tools.
 echo "===== RESULT: built packages ====="
+PUBLISH_DIR="$PACKAGES_DIR/publish"
+rm -rf "$PUBLISH_DIR"
+mkdir -p "$PUBLISH_DIR"
 if ls "$PACKAGES_DIR"/All/*.tgz >/dev/null 2>&1; then
     for tgz in "$PACKAGES_DIR"/All/*.tgz; do
         arch="$(pkg_info -Q MACHINE_ARCH "$tgz" 2>/dev/null || true)"
-        echo "$tgz -> MACHINE_ARCH=$arch"
-        if [ "$arch" != "$TARGET_ARCH" ]; then
-            echo "FATAL: $tgz is $arch, expected $TARGET_ARCH" >&2
-            failed="$failed $tgz(arch=$arch)"
+        if [ "$arch" = "$TARGET_ARCH" ]; then
+            echo "  [publish]        $(basename "$tgz") ($arch)"
+            cp "$tgz" "$PUBLISH_DIR/"
+        else
+            echo "  [host-tool skip] $(basename "$tgz") ($arch)"
         fi
     done
-    ( cd "$PACKAGES_DIR/All" && \
-      pkg_info -X ./*.tgz | gzip -9 > pkg_summary.gz )
 else
     echo "No packages were built" >&2
     failed="$failed (none-built)"
 fi
 
+# Every requested origin must have produced a $TARGET_ARCH package.
+for _want in $target_pkgs; do
+    if [ -f "$PUBLISH_DIR/$_want.tgz" ]; then
+        echo "target package OK: $_want.tgz"
+    else
+        echo "FATAL: target package $_want.tgz missing or not $TARGET_ARCH" >&2
+        failed="$failed $_want(missing-or-wrong-arch)"
+    fi
+done
+
+# Summary index over the published ($TARGET_ARCH) packages only.
+if ls "$PUBLISH_DIR"/*.tgz >/dev/null 2>&1; then
+    ( cd "$PUBLISH_DIR" && pkg_info -X ./*.tgz | gzip -9 > pkg_summary.gz )
+fi
+
 # --- 8. Copy outputs into the shared workspace ------------------------------
 # Only WORKSPACE is synced back to the host runner; package output lives under
-# $HOME/pkgsrc/packages/All (outside it), so publish a copy here.
+# $HOME/pkgsrc/packages (outside it), so publish the $TARGET_ARCH set here.
 OUT="$WORKSPACE/packages"
 rm -rf "$OUT"
 mkdir -p "$OUT/All"
-cp "$PACKAGES_DIR"/All/* "$OUT/All/" 2>/dev/null || true
+cp "$PUBLISH_DIR"/* "$OUT/All/" 2>/dev/null || true
 ls -l "$OUT/All" || true
 
 if [ -n "$failed" ]; then

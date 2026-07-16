@@ -87,9 +87,26 @@ NOT in mk.conf. bsd.prefs.mk's `.ifdef TARGET_MACHINE_ARCH` block — which
 later conditional (`.if defined(TARGET_MACHINE_ARCH) && … ${TARGET_MACHINE_GNU_ARCH} == "arm" …`)
 references it. A `TARGET_*` arriving via mk.conf is too late → the derived var
 stays empty → `make: Malformed conditional`. Command-line assignments are
-present at startup (so the block defines the GNU-arch var) and propagate to the
-cross-libtool-base tool-dep build via `${MAKEFLAGS}`. The script builds a
+present at startup (so the block defines the GNU-arch var). The script builds a
 `TARGET_VARS` string and appends it to every pkgsrc make line.
+
+**Su-boundary (3rd commit) — confirmed working for the BUILD:** run 29480298572
+showed `cross-libtool-base MACHINE_PLATFORM = [NetBSD-10.1-vax]`, bash built,
+the whole native tool closure built, and cross-libtool-base itself **built and
+packaged** as `...-NetBSD-10.1-vax-...tgz`. But its `package-install` re-make
+(escalated via `SU_CMD`) again saw an empty arch (`work.NetBSD-10.1-`). Cause:
+pkgsrc only re-passes a *curated* set across the su boundary
+(`PKGSRC_MAKE_ENV` carries `MAKECONF`; `_ROOT_CMD` re-passes `USE_CROSS_COMPILE`)
+— NOT `TARGET_*` — and `sudo` resets the environment. Fix: bake `TARGET_*` into
+`SU_CMD` as `sudo /usr/bin/env TARGET_…=… /bin/sh -c` (env's args survive
+sudo's reset; present at the root make's startup).
+
+**Arch partition (3rd commit):** `DEPENDS_TARGET=package-install` drops the
+native tool closure (x86_64) into `packages/All` alongside our vax packages, so
+the old "every .tgz must be vax" check wrongly failed. Now the script records
+each requested origin's `PKGNAME`, publishes only `MACHINE_ARCH=$TARGET_ARCH`
+packages (host tools skipped, incl. the vax-*named* but x86_64 cross-libtool-base),
+and fails only if a requested origin didn't produce a target-arch package.
 
 ## Next steps (candidates)
 1. Verify the pushed fix on CI: watch that the `cross-config` assertion prints
