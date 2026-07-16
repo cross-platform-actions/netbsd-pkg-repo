@@ -278,6 +278,7 @@ echo "cross-config OK"
 mkdir -p "$PACKAGES_DIR/All"
 failed=""
 target_pkgs=""
+TARGET_PKGDIR=""
 while IFS= read -r origin || [ -n "$origin" ]; do
     case "$origin" in ''|\#*) continue ;; esac
     # Trim surrounding whitespace.
@@ -293,14 +294,20 @@ while IFS= read -r origin || [ -n "$origin" ]; do
          make package BATCH=yes DEPENDS_TARGET=package-install \
               MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS ); then
         echo "CROSS BUILD OK: $origin"
-        # Record the expected package name so step 7 can require it to exist as
-        # a $TARGET_ARCH package. The build also drops the native tool-closure
-        # packages (perl, bison, libtool-base...) into packages/All; those are
-        # host tools, not ours to verify or publish.
+        # Record the expected package name (step 7 requires each to exist as a
+        # $TARGET_ARCH package) and, once, the cross PACKAGES dir. pkgsrc writes
+        # cross-built target packages to packages.${MACHINE_PLATFORM}/All (e.g.
+        # packages.NetBSD-10.1-vax/All), SEPARATE from the native tool closure
+        # it drops in the plain packages/All -- so we collect from PACKAGES.
         _pkgname="$( cd "$PKGSRCDIR/$origin" && \
                      make show-var VARNAME=PKGNAME \
                           MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
         target_pkgs="$target_pkgs $_pkgname"
+        if [ -z "$TARGET_PKGDIR" ]; then
+            TARGET_PKGDIR="$( cd "$PKGSRCDIR/$origin" && \
+                make show-var VARNAME=PACKAGES \
+                     MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )/All"
+        fi
     else
         echo "CROSS BUILD FAILED: $origin" >&2
         failed="$failed $origin"
@@ -312,36 +319,33 @@ while IFS= read -r origin || [ -n "$origin" ]; do
 done < "$SCRIPT_DIR/../config/pkglist"
 
 # --- 7. Confirm target arch and generate the summary index ------------------
-# The build populated packages/All with BOTH our cross-built $TARGET_ARCH
-# packages AND the native (host) build-tool closure (perl, bison, libtool...,
-# MACHINE_ARCH=x86_64 -- including cross-libtool-base, which is NAMED for the
-# target but is a host binary). Only the $TARGET_ARCH packages belong in the
-# repo, so partition by arch: publish the target ones, skip the host tools.
-echo "===== RESULT: built packages ====="
-PUBLISH_DIR="$PACKAGES_DIR/publish"
+# Collect every $TARGET_ARCH package from the cross PACKAGES dir (target build
+# packages plus any vax runtime deps pkgsrc cross-built). The native host tool
+# closure lives in the separate plain packages/All and is intentionally ignored.
+echo "===== RESULT: built target packages ====="
+echo "target package dir: ${TARGET_PKGDIR:-<none>}"
+PUBLISH_DIR="$PKGSRCDIR/publish"
 rm -rf "$PUBLISH_DIR"
 mkdir -p "$PUBLISH_DIR"
-if ls "$PACKAGES_DIR"/All/*.tgz >/dev/null 2>&1; then
-    for tgz in "$PACKAGES_DIR"/All/*.tgz; do
+if [ -n "$TARGET_PKGDIR" ] && ls "$TARGET_PKGDIR"/*.tgz >/dev/null 2>&1; then
+    for tgz in "$TARGET_PKGDIR"/*.tgz; do
         arch="$(pkg_info -Q MACHINE_ARCH "$tgz" 2>/dev/null || true)"
-        if [ "$arch" = "$TARGET_ARCH" ]; then
-            echo "  [publish]        $(basename "$tgz") ($arch)"
-            cp "$tgz" "$PUBLISH_DIR/"
-        else
-            echo "  [host-tool skip] $(basename "$tgz") ($arch)"
-        fi
+        echo "  $(basename "$tgz") ($arch)"
+        cp "$tgz" "$PUBLISH_DIR/"
     done
 else
-    echo "No packages were built" >&2
+    echo "No target packages were built" >&2
     failed="$failed (none-built)"
 fi
 
 # Every requested origin must have produced a $TARGET_ARCH package.
 for _want in $target_pkgs; do
-    if [ -f "$PUBLISH_DIR/$_want.tgz" ]; then
-        echo "target package OK: $_want.tgz"
+    _f="$PUBLISH_DIR/$_want.tgz"
+    _a="$(pkg_info -Q MACHINE_ARCH "$_f" 2>/dev/null || true)"
+    if [ -f "$_f" ] && [ "$_a" = "$TARGET_ARCH" ]; then
+        echo "target package OK: $_want.tgz ($_a)"
     else
-        echo "FATAL: target package $_want.tgz missing or not $TARGET_ARCH" >&2
+        echo "FATAL: target package $_want.tgz missing or not $TARGET_ARCH (arch=$_a)" >&2
         failed="$failed $_want(missing-or-wrong-arch)"
     fi
 done

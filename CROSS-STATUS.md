@@ -12,11 +12,15 @@ resume mid-build, so it never converges. Cross-compiling builds the entire
 build-tool closure (perl, texinfo, bison, libtool, libnbcompat…) **natively for
 amd64** and only cross-compiles the target's own code — no emulated perl.
 
-## Status: PROVEN, one blocker left
-- ✅ `bash-5.3.15.tgz` **cross-built for vax** end-to-end (run 29160941941).
-  Cross-compiling works.
-- ❌ `sudo` and `rsync` both fail at the **same** blocker (see below). bash has
-  no libtool dependency and sailed through; sudo+rsync do.
+## Status: cross-libtool-base blocker SOLVED; bash + rsync build; sudo parked
+- ✅ `bash-5.3.15` and `rsync-3.4.4` **cross-built for vax** (run 29482043027).
+- ✅ The `cross/cross-libtool-base` blocker that stopped both libtool-using
+  packages is fully fixed (three-part fix below). rsync now cross-builds clean.
+- ⏸️ `sudo` is TEMPORARILY removed from `config/pkglist`: it cross-builds all its
+  deps (incl. cross-libtool-base) but its OWN `configure` dies with "cannot run
+  C compiled programs" — a nested configure inside sudo runs a just-built vax
+  test binary on the amd64 host because that inner configure isn't given
+  `--build`. Distinct from the (solved) libtool blocker; see "sudo" below.
 
 ## How it works (pipeline)
 1. `Restore toolchain cache` (key `toolchain-vax-101-netbsd-10-v2-…`).
@@ -101,22 +105,34 @@ pkgsrc only re-passes a *curated* set across the su boundary
 `SU_CMD` as `sudo /usr/bin/env TARGET_…=… /bin/sh -c` (env's args survive
 sudo's reset; present at the root make's startup).
 
-**Arch partition (3rd commit):** `DEPENDS_TARGET=package-install` drops the
-native tool closure (x86_64) into `packages/All` alongside our vax packages, so
-the old "every .tgz must be vax" check wrongly failed. Now the script records
-each requested origin's `PKGNAME`, publishes only `MACHINE_ARCH=$TARGET_ARCH`
-packages (host tools skipped, incl. the vax-*named* but x86_64 cross-libtool-base),
-and fails only if a requested origin didn't produce a target-arch package.
+Run 29482043027 confirmed the su-boundary fix: `cross-libtool-base` installs and
+**rsync cross-builds clean**. (Only sudo then failed, on its own configure.)
+
+**Publish dir (4th commit):** cross-built target packages don't land in
+`packages/All` — pkgsrc writes them to `packages.${MACHINE_PLATFORM}/All`
+(`packages.NetBSD-10.1-vax/All`), while the native tool closure goes to the
+plain `packages/All`. The result check now reads `PACKAGES` (`make show-var`)
+from a built origin, collects every `.tgz` there (target + any vax runtime
+deps), verifies each requested origin's `PKGNAME` is present and vax, and
+publishes those to `$WORKSPACE/packages/All`.
+
+## sudo (the remaining package)
+`sudo`'s top-level configure detects cross-compiling correctly, but a NESTED
+configure it spawns dies: `configure: error: cannot run C compiled programs. If
+you meant to cross compile, use '--build'.` The inner configure isn't given
+`--build`, so autoconf thinks it's native and tries to run a vax test binary on
+amd64. Next probes: capture the failing `config.log`; check whether sudo uses
+`AC_CONFIG_SUBDIRS`/a bundled lib whose configure loses `--build`; try adding
+`CONFIGURE_ARGS+=--build=${MACHINE_GNU_PLATFORM}` (or the pkgsrc cross
+`--build`) and/or `CONFIG_SITE`. rsync (also libtool) works, so this is
+sudo-specific, not an infra gap.
 
 ## Next steps (candidates)
-1. Verify the pushed fix on CI: watch that the `cross-config` assertion prints
-   `cross-libtool-base MACHINE_PLATFORM = [NetBSD-10.1-vax]` and that sudo+rsync
-   build to completion.
+1. Confirm the current run goes GREEN (bash + rsync published; deploy skipped on
+   branch). Then re-enable `security/sudo` and tackle its nested-configure issue.
 2. Add a second cache layer for the native tool closure (perl/bison/texinfo/
    libtool ~16 min/run) to speed iteration.
-3. Once sudo/rsync build: confirm all three `.tgz` are `MACHINE_ARCH=vax`, wire
-   collection/upload, then consider re-adding `curl` (cross removes its
-   perl/openssl blocker).
+3. Consider re-adding `curl` (cross removes its perl/openssl blocker).
 
 ## Retrigger
 Push to `cross-build`, or `gh workflow run build-and-deploy.yml --ref cross-build`.
