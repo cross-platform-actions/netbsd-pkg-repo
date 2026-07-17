@@ -56,6 +56,26 @@ PKGSRC_MAKECONF="$PKGSRCDIR/mk.conf"
 PACKAGES_DIR="$PKGSRCDIR/packages"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# fetch_retry URL OUTFILE: download with ftp(1), retrying transient failures.
+# The pinned pkgsrc/src tarballs come from public mirrors (cdn.netbsd.org,
+# codeload.github.com) that intermittently return 503s; a single ftp with no
+# retry turns a momentary mirror hiccup into a wasted ~20-min CI run (the pkgsrc
+# fetch is re-done every run since only the toolchain is cached). Retry a few
+# times with backoff before giving up.
+fetch_retry() {  # $1 = URL  $2 = output file
+    _n=1
+    while :; do
+        if ftp -o "$2" "$1"; then return 0; fi
+        if [ "$_n" -ge 5 ]; then
+            echo "FATAL: fetch failed after $_n attempts: $1" >&2
+            return 1
+        fi
+        echo "fetch attempt $_n failed, retrying in $((_n * 10))s: $1" >&2
+        sleep "$((_n * 10))"
+        _n=$((_n + 1))
+    done
+}
+
 # CROSS_OPSYS_VERSION is the packed integer form of the version, e.g. 10.1 ->
 # 101000 (MMmm00). Derive it so bumping config/versions needs no code change.
 opsys_version_int() {  # $1 = version like "10.1"
@@ -103,8 +123,9 @@ else
     echo "===== TOOLCHAIN CACHE MISS: building cross toolchain ====="
     if [ ! -f "$SRCDIR/build.sh" ]; then
         cd "$HOME"
-        ftp -o src.tar.gz \
-            "https://codeload.github.com/NetBSD/src/tar.gz/refs/heads/${SRC_BRANCH}"
+        fetch_retry \
+            "https://codeload.github.com/NetBSD/src/tar.gz/refs/heads/${SRC_BRANCH}" \
+            src.tar.gz
         tar -xzf src.tar.gz
         mv "src-${SRC_BRANCH}" "$SRCDIR"
         rm -f src.tar.gz
@@ -142,8 +163,9 @@ echo "CROSS_DESTDIR=$CROSS_DESTDIR"
 # the CVS metadata pkgsrc does not need to build.
 if [ ! -f "$PKGSRCDIR/mk/bsd.pkg.mk" ]; then
     cd "$HOME"
-    ftp -o pkgsrc.tar.gz \
-        "https://cdn.netbsd.org/pub/pkgsrc/${PKGSRC_BRANCH}/pkgsrc.tar.gz"
+    fetch_retry \
+        "https://cdn.netbsd.org/pub/pkgsrc/${PKGSRC_BRANCH}/pkgsrc.tar.gz" \
+        pkgsrc.tar.gz
     tar -xzf pkgsrc.tar.gz --exclude-vcs
     rm -f pkgsrc.tar.gz
 fi
