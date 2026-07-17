@@ -210,41 +210,34 @@ for _v in OPSYS OS_VERSION OPSYS_VERSION LOWER_OPSYS \
     TARGET_VARS="${TARGET_VARS} TARGET_${_v}=${_val}"
 done
 
-# --- Native build compiler for AX_PROG_CC_FOR_BUILD (the sudo blocker) ------
-# sudo's configure resolves the TARGET compiler fine, then runs a SECOND probe
-# (an AX_PROG_CC_FOR_BUILD-style macro) for a NATIVE *build* compiler to build
-# host-side codegen tools. It searches ${build_alias}-gcc (x86_64--netbsd-gcc,
-# which does not exist) and falls back to bare `gcc` -- but under a pkgsrc cross
-# build `gcc` on PATH is the pkgsrc WRAPPER pointing at the vax cross-compiler,
-# so the macro's "can it run a compiled program?" check runs a vax binary on the
-# amd64 host and dies with "cannot run C compiled programs" (configure exit 77).
-# Give that probe a real native amd64 compiler via CC_FOR_BUILD, by ABSOLUTE
-# path -- an absolute path bypasses the pkgsrc wrapper, which only intercepts the
-# bare name on PATH. AC_CHECK_PROGS(CC_FOR_BUILD, ...) keeps a pre-set value, so
-# the env var wins over the ${build_alias}-gcc/gcc search. bash/rsync never probe
-# a build compiler so only sudo needs this, but a native build CC is correct for
-# ANY cross package -> set it globally via CONFIGURE_ENV.
-BUILD_CC=/usr/bin/gcc
-[ -x "$BUILD_CC" ] || BUILD_CC=/usr/bin/cc
-BUILD_CPP=/usr/bin/cpp
-BUILD_CXX=/usr/bin/g++
-[ -x "$BUILD_CXX" ] || BUILD_CXX=/usr/bin/c++
-echo "===== native build compiler (CC_FOR_BUILD) ====="
-ls -l /usr/bin/gcc /usr/bin/cc /usr/bin/g++ /usr/bin/c++ /usr/bin/cpp 2>/dev/null || true
-"$BUILD_CC" --version 2>&1 | head -n 1 || true
-
 {
     # SU_CMD escalates to root for package-install (via passwordless sudo, not
     # su, which has no TTY). The `env ${TARGET_VARS}` wrapper carries TARGET_*
     # into the root make -- see the block comment above.
     echo "SU_CMD=${SUDO} /usr/bin/env ${TARGET_VARS} /bin/sh -c"
-    # Feed sudo's build-compiler probe (AX_PROG_CC_FOR_BUILD) a NATIVE amd64
-    # compiler by absolute path so it doesn't fall back to the pkgsrc cross
-    # wrapper -- see the BUILD_CC block above. Values are single tokens (no
-    # embedded spaces) because CONFIGURE_ENV is a space-split token list.
-    echo "CONFIGURE_ENV+=CC_FOR_BUILD=${BUILD_CC}"
-    echo "CONFIGURE_ENV+=CPP_FOR_BUILD=${BUILD_CPP}"
-    echo "CONFIGURE_ENV+=CXX_FOR_BUILD=${BUILD_CXX}"
+    # sudo's configure resolves the TARGET compiler fine, then runs a SECOND
+    # probe (autoconf-archive's AX_PROG_CC_FOR_BUILD) for a NATIVE *build*
+    # compiler to build host-side codegen tools. Left to itself it falls back to
+    # bare `gcc`, which under a pkgsrc cross build is the WRAPPER pointing at the
+    # vax cross-compiler -> the probe's run-test builds a vax binary that can't
+    # execute on amd64 ("cannot run C compiled programs", exit 77). bash/rsync
+    # never probe a build compiler, so only sudo hits this.
+    #
+    # Feed that probe pkgsrc's own native build compiler via CC_FOR_BUILD, the
+    # exact recipe pkgsrc's cross HOWTO and its own packages (devel/gmp,
+    # lang/gcc14) use. Write the make-variable references literally (mk.conf is
+    # read as a makefile): ${NATIVE_CC} is `/usr/bin/cc -B /usr/libexec -B
+    # /usr/bin` (mk/tools/tools.NetBSD.mk) -- the -B flags make cc use the NATIVE
+    # as/ld from /usr/libexec and /usr/bin instead of the vax cross as/ld the
+    # pkgsrc wrapper puts first on PATH (a bare /usr/bin/gcc without -B picked up
+    # the vax as/ld and failed with "C compiler cannot create executables"). The
+    # :Q quoting is required: NATIVE_CC contains spaces and CONFIGURE_ENV is a
+    # token list, so :Q keeps each value one argument. A native build compiler is
+    # correct for ANY cross package, so set it globally. Single-quoted so the
+    # shell doesn't try to expand ${...} -- pkgsrc make expands them at use time.
+    echo 'CONFIGURE_ENV+=CC_FOR_BUILD=${NATIVE_CC:Q}'
+    echo 'CONFIGURE_ENV+=CXX_FOR_BUILD=${NATIVE_CXX:Q}'
+    echo 'CONFIGURE_ENV+=LD_FOR_BUILD=${NATIVE_LD:Q}'
     # NOTE the ?= (per pkgsrc's HOWTO-use-crosscompile): it's a DEFAULT, not a
     # force. Target packages cross-build, but pkgsrc recursively sets
     # USE_CROSS_COMPILE=no for bootstrap/tool dependencies that must run on the
@@ -283,6 +276,12 @@ assert_var() {  # $1=VARNAME  $2=expected-substring
 assert_var SU_CMD sudo
 assert_var MACHINE_ARCH "$TARGET_ARCH"
 assert_var USE_CROSS_COMPILE yes
+# NATIVE_CC feeds sudo's build-compiler probe (CC_FOR_BUILD); confirm it resolves
+# to a native compiler with the -B flags that force native as/ld. Not fatal (it
+# only matters to sudo) -- just surface it in the log for diagnosis.
+_ncc="$( cd "$PKGSRCDIR/pkgtools/digest" && \
+         make show-var VARNAME=NATIVE_CC MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
+echo "NATIVE_CC = [$_ncc]"
 
 # cross/cross-libtool-base is the sudo/rsync blocker: its LIBTOOL_CROSS_COMPILE
 # switcheroo derives MACHINE_PLATFORM from TARGET_MACHINE_ARCH, so confirm that
@@ -343,11 +342,17 @@ while IFS= read -r origin || [ -n "$origin" ]; do
         failed="$failed $origin"
         # Surface config.log context so a cross-configure failure (e.g. "cannot
         # run C compiled programs") is diagnosable from this run's log without
-        # another ~20-min CI round-trip. There can be several (nested configs);
-        # show the error-bearing tail of each.
+        # another ~20-min CI round-trip. There can be several (nested configs).
+        # The confdefs.h dump lives at the END of config.log, so a plain tail
+        # misses the actual compiler/linker error -- also grep the error-bearing
+        # lines (the conftest command + gcc/ld/collect2/"cannot" output) which
+        # sit near the top for a first-probe failure.
         find "$PKGSRCDIR/$origin"/work* -name config.log 2>/dev/null | while IFS= read -r _cl; do
-            echo "----- config.log: $_cl (last 40 lines) -----"
-            tail -n 40 "$_cl" 2>/dev/null || true
+            echo "----- config.log: $_cl (error lines) -----"
+            grep -nE "configure:[0-9]+:|error|cannot|conftest|gcc|/ld|collect2|C compiler|CC_FOR_BUILD" \
+                "$_cl" 2>/dev/null | head -n 60 || true
+            echo "----- config.log: $_cl (last 25 lines) -----"
+            tail -n 25 "$_cl" 2>/dev/null || true
         done
     fi
     # Free work trees (deps included) between origins to bound disk use.
