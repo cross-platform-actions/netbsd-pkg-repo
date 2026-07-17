@@ -56,23 +56,29 @@ PKGSRC_MAKECONF="$PKGSRCDIR/mk.conf"
 PACKAGES_DIR="$PKGSRCDIR/packages"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# fetch_retry URL OUTFILE: download with ftp(1), retrying transient failures.
-# The pinned pkgsrc/src tarballs come from public mirrors (cdn.netbsd.org,
-# codeload.github.com) that intermittently return 503s; a single ftp with no
-# retry turns a momentary mirror hiccup into a wasted ~20-min CI run (the pkgsrc
-# fetch is re-done every run since only the toolchain is cached). Retry a few
-# times with backoff before giving up.
-fetch_retry() {  # $1 = URL  $2 = output file
-    _n=1
+# fetch_retry OUTFILE URL...: download OUTFILE trying each candidate mirror URL
+# in order, over several rounds with backoff. The pinned pkgsrc/src tarballs
+# come from public mirrors that intermittently -- and sometimes for many
+# minutes -- return 503s (cdn.netbsd.org had a sustained outage that failed two
+# consecutive runs). A single ftp with no retry, or retries against one flaky
+# mirror, turns that into a wasted ~20-min CI run (the pkgsrc fetch re-runs every
+# build since only the toolchain is cached). Trying an alternate mirror is what
+# actually survives a full-mirror outage, so callers pass a fallback URL.
+fetch_retry() {  # $1 = output file; $2.. = candidate URLs (in preference order)
+    _out="$1"; shift
+    _round=1
     while :; do
-        if ftp -o "$2" "$1"; then return 0; fi
-        if [ "$_n" -ge 5 ]; then
-            echo "FATAL: fetch failed after $_n attempts: $1" >&2
+        for _url in "$@"; do
+            if ftp -o "$_out" "$_url"; then return 0; fi
+            echo "fetch failed (round $_round): $_url" >&2
+        done
+        if [ "$_round" -ge 3 ]; then
+            echo "FATAL: all mirrors failed after $_round rounds for $_out" >&2
             return 1
         fi
-        echo "fetch attempt $_n failed, retrying in $((_n * 10))s: $1" >&2
-        sleep "$((_n * 10))"
-        _n=$((_n + 1))
+        echo "all mirrors failed round $_round, retrying in $((_round * 15))s" >&2
+        sleep "$((_round * 15))"
+        _round=$((_round + 1))
     done
 }
 
@@ -123,9 +129,8 @@ else
     echo "===== TOOLCHAIN CACHE MISS: building cross toolchain ====="
     if [ ! -f "$SRCDIR/build.sh" ]; then
         cd "$HOME"
-        fetch_retry \
-            "https://codeload.github.com/NetBSD/src/tar.gz/refs/heads/${SRC_BRANCH}" \
-            src.tar.gz
+        fetch_retry src.tar.gz \
+            "https://codeload.github.com/NetBSD/src/tar.gz/refs/heads/${SRC_BRANCH}"
         tar -xzf src.tar.gz
         mv "src-${SRC_BRANCH}" "$SRCDIR"
         rm -f src.tar.gz
@@ -161,13 +166,24 @@ echo "CROSS_DESTDIR=$CROSS_DESTDIR"
 # --- 2. Fetch pinned pkgsrc -------------------------------------------------
 # base ftp(1) (tnftp) speaks HTTPS, so no curl/git needed. --exclude-vcs drops
 # the CVS metadata pkgsrc does not need to build.
+#
+# Two mirrors: the canonical cdn.netbsd.org, and the NetBSD/pkgsrc GitHub mirror
+# (codeload -- the same host we fetch src from, rock-solid) as a fallback for
+# cdn.netbsd.org's recurring 503 outages. The two tarballs extract to different
+# top-level dirs -- cdn -> `pkgsrc/`, GitHub -> `pkgsrc-${PKGSRC_BRANCH}/` -- so
+# normalize whichever we got to $PKGSRCDIR.
 if [ ! -f "$PKGSRCDIR/mk/bsd.pkg.mk" ]; then
     cd "$HOME"
-    fetch_retry \
+    fetch_retry pkgsrc.tar.gz \
         "https://cdn.netbsd.org/pub/pkgsrc/${PKGSRC_BRANCH}/pkgsrc.tar.gz" \
-        pkgsrc.tar.gz
+        "https://codeload.github.com/NetBSD/pkgsrc/tar.gz/refs/heads/${PKGSRC_BRANCH}"
     tar -xzf pkgsrc.tar.gz --exclude-vcs
     rm -f pkgsrc.tar.gz
+    # cdn already yields $HOME/pkgsrc; the GitHub tarball yields
+    # $HOME/pkgsrc-${PKGSRC_BRANCH} -- rename it into place.
+    if [ ! -d "$PKGSRCDIR" ] && [ -d "$HOME/pkgsrc-${PKGSRC_BRANCH}" ]; then
+        mv "$HOME/pkgsrc-${PKGSRC_BRANCH}" "$PKGSRCDIR"
+    fi
 fi
 
 # --- 3+4. Write the pkgsrc cross mk.conf ------------------------------------
