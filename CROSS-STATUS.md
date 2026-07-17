@@ -12,18 +12,19 @@ resume mid-build, so it never converges. Cross-compiling builds the entire
 build-tool closure (perl, texinfo, bison, libtool, libnbcompat…) **natively for
 amd64** and only cross-compiles the target's own code — no emulated perl.
 
-## Status: cross-libtool-base blocker SOLVED; bash + rsync build GREEN; sudo parked (diagnosed)
-- ✅ GREEN end-to-end run 29483870530 (build job success; deploy skipped on
-  branch). Published vax set: `bash-5.3.15`, `rsync-3.4.4`, plus rsync's vax
-  runtime deps `lz4`, `popt`, `xxhash`, `zstd` — host tool closure excluded.
-- ✅ `bash-5.3.15` and `rsync-3.4.4` **cross-built for vax** (run 29482043027).
+## Status: bash + rsync + sudo all cross-build GREEN (all blockers SOLVED)
+- ✅ GREEN end-to-end run 29607713768 (build job success; deploy skipped on
+  branch). Published vax set: `bash-5.3.15`, `rsync-3.4.4`, `sudo-1.9.17p1`,
+  plus rsync's vax runtime deps `lz4`, `popt`, `xxhash`, `zstd` — host tool
+  closure excluded.
+- ✅ `bash-5.3.15`, `rsync-3.4.4` and `sudo-1.9.17p1` **cross-built for vax**.
 - ✅ The `cross/cross-libtool-base` blocker that stopped both libtool-using
-  packages is fully fixed (three-part fix below). rsync now cross-builds clean.
-- ⏸️ `sudo` is TEMPORARILY removed from `config/pkglist`: it cross-builds all its
-  deps (incl. cross-libtool-base) but its OWN `configure` dies with "cannot run
-  C compiled programs" — a nested configure inside sudo runs a just-built vax
-  test binary on the amd64 host because that inner configure isn't given
-  `--build`. Distinct from the (solved) libtool blocker; see "sudo" below.
+  packages is fully fixed (three-part fix below). rsync + sudo cross-build clean.
+- ✅ `sudo`'s own-configure blocker is SOLVED (run 29607713768): its second
+  compiler probe (`AX_PROG_CC_FOR_BUILD`) needed a native BUILD compiler; feeding
+  it pkgsrc's `${NATIVE_CC}` via `CONFIGURE_ENV` fixed it. See "sudo" below.
+- ✅ Fetch is now mirror-resilient: `cdn.netbsd.org` 503 outages fall back to the
+  `NetBSD/pkgsrc` GitHub mirror (see "Fetch resilience" below).
 
 ## How it works (pipeline)
 1. `Restore toolchain cache` (key `toolchain-vax-101-netbsd-10-v2-…`).
@@ -54,7 +55,7 @@ Cache-hit runs are ~3 min to reach packages; the native tool closure (perl,
 bison, texinfo, libtool-base) rebuilds each run (~16 min) — candidate for a
 second cache layer.
 
-## The remaining blocker — DIAGNOSED & FIX PUSHED (awaiting CI)
+## The cross-libtool-base blocker — SOLVED
 `sudo` and `rsync` both died building `cross/cross-libtool-base`:
 
     pkg_add: Can't process .../cross/cross-libtool-base/work.NetBSD-10.1-/.packages/cross-libtool-base-NetBSD-10*: No such file or directory
@@ -119,40 +120,55 @@ from a built origin, collects every `.tgz` there (target + any vax runtime
 deps), verifies each requested origin's `PKGNAME` is present and vax, and
 publishes those to `$WORKSPACE/packages/All`.
 
-## sudo (the remaining package) — DIAGNOSED (run 29485406404 config.log dump)
+## sudo — SOLVED (run 29607713768; fix in scripts/cross-build.sh)
 `sudo`'s configure resolves the TARGET compiler fine (`vax--netbsdelf-gcc`,
-`cross compiling... yes`). It then runs a SECOND `AC_PROG_CC` for a NATIVE
-**build** compiler (to build host-side codegen tools):
+`cross compiling... yes`), then runs a SECOND compiler probe —
+autoconf-archive's `AX_PROG_CC_FOR_BUILD` (`security/sudo` calls it via
+`configure.ac`) — for a NATIVE **build** compiler to build host-side codegen
+tools. Left alone it searched `x86_64--netbsd-gcc` (`${build_alias}-gcc`, absent)
+then fell back to bare `gcc`, which in a pkgsrc cross build is the compiler
+WRAPPER pointing at the vax cross-compiler → its run-test built a vax binary that
+can't run on amd64 → `cannot run C compiled programs` (exit 77). bash/rsync never
+probe a build compiler, so only sudo hit this.
 
-    checking for vax--netbsdelf-gcc... vax--netbsdelf-gcc
-    checking whether we are cross compiling... yes        # target CC: OK
-    checking for x86_64--netbsd-gcc... no                 # looks for a build CC
-    checking for gcc... gcc                                # falls back to plain gcc
-    checking whether we are cross compiling... configure: error: cannot run C compiled programs.
+**Fix (the pkgsrc-blessed recipe, per `doc/HOWTO-dev-crosscompile`; mirrors
+`devel/gmp` and `lang/gcc14`):** feed the probe a native build compiler via
+`CONFIGURE_ENV`, written as literal make-variable references in our mk.conf
+(read as a makefile, so pkgsrc expands them at use time):
 
-The trap: in a pkgsrc cross build, plain `gcc` on PATH is the pkgsrc compiler
-WRAPPER, which points at the vax cross-compiler. So sudo's build-compiler
-sanity check compiles a *vax* binary and can't run it on amd64 → error 77.
-bash/rsync never look for a separate build compiler, so only sudo hits this.
+    CONFIGURE_ENV+=CC_FOR_BUILD=${NATIVE_CC:Q}
+    CONFIGURE_ENV+=CXX_FOR_BUILD=${NATIVE_CXX:Q}
+    CONFIGURE_ENV+=LD_FOR_BUILD=${NATIVE_LD:Q}
 
-Candidate fixes (each ~20-min CI round-trip; the build loop now dumps
-config.log on failure to speed this):
-1. Provide a REAL native build compiler where sudo looks for it, e.g. a
-   `x86_64--netbsd-gcc` (build_alias-prefixed) on PATH -> `/usr/bin/gcc` (the
-   NetBSD base native gcc, NOT the wrapper). sudo's search finds it and skips
-   the plain-`gcc`(=wrapper) fallback.
-2. Or set the right build-CC var in CONFIGURE_ENV (sudo uses an AC_PROG_CC for
-   build; identify its cache/var name from config.log — `CC_FOR_BUILD`/
-   `BUILD_CC`/`ac_cv_prog_*`) to `/usr/bin/gcc`.
-3. Check whether pkgsrc already exposes a native build-compiler knob for cross
-   (grep mk/ for CC_FOR_BUILD / BUILD_CC / NATIVE_CC) and wire that through.
+`AX_PROG_CC_FOR_BUILD` does `pushdef([CC], CC_FOR_BUILD)` then `AC_PROG_CC`, and
+`AC_PROG_CC` honours a preset `$CC` — so a set `CC_FOR_BUILD` wins over the
+`build_alias-gcc`/`gcc` search. The value that matters is pkgsrc's `NATIVE_CC`
+(`mk/tools/tools.NetBSD.mk`): `/usr/bin/cc -B /usr/libexec -B /usr/bin`. The
+**`-B` flags are the crux** — they force cc to use the NATIVE as/ld from
+/usr/libexec and /usr/bin instead of the vax cross as/ld that the pkgsrc wrapper
+puts first on PATH. (A first attempt with a bare `CC_FOR_BUILD=/usr/bin/gcc`
+cleared the "cannot run" error but then failed one step earlier with "C compiler
+cannot create executables" precisely because it linked with the vax ld.) `:Q`
+quoting is required because `NATIVE_CC` contains spaces and `CONFIGURE_ENV` is a
+token list.
+
+## Fetch resilience — mirror fallback (scripts/cross-build.sh)
+The pinned pkgsrc tree is re-fetched every run (only the toolchain is cached),
+and `cdn.netbsd.org` had a *sustained* 503 outage that failed two consecutive
+runs. `fetch_retry OUTFILE URL...` now takes a list of mirrors and tries each in
+order over several rounds; the pkgsrc fetch falls back from `cdn.netbsd.org` to
+the `NetBSD/pkgsrc` GitHub mirror (codeload, the same reliable host used for the
+src tree). The two tarballs unpack to different top dirs (`pkgsrc/` vs
+`pkgsrc-${PKGSRC_BRANCH}/`), so the GitHub layout is normalized into `$PKGSRCDIR`.
+The on-failure config.log dump also now greps the compiler/linker error lines
+(the confdefs.h block at the file end had pushed the real error out of tail).
 
 ## Next steps (candidates)
-1. Confirm the current run goes GREEN (bash + rsync published; deploy skipped on
-   branch). Then re-enable `security/sudo` and tackle its nested-configure issue.
-2. Add a second cache layer for the native tool closure (perl/bison/texinfo/
+1. Add a second cache layer for the native tool closure (perl/bison/texinfo/
    libtool ~16 min/run) to speed iteration.
-3. Consider re-adding `curl` (cross removes its perl/openssl blocker).
+2. Consider re-adding `curl` (cross removes its perl/openssl blocker).
+3. This branch is ready to merge to master (delete this file on merge); the
+   deploy job is gated to master and will publish the vax set on merge.
 
 ## Retrigger
 Push to `cross-build`, or `gh workflow run build-and-deploy.yml --ref cross-build`.

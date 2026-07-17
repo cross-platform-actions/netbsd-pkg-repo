@@ -13,10 +13,10 @@
 shells/bash
 net/rsync
 
-# sudo's configure runs a SECOND compiler probe (AX_PROG_CC_FOR_BUILD-style)
-# for a native BUILD compiler; plain `gcc` in the cross build is the pkgsrc
-# wrapper pointing at the vax cross-compiler, so the build-compiler sanity check
-# compiled a vax binary that can't run on amd64 -> "cannot run C compiled
-# programs". Fixed by feeding a real native amd64 CC_FOR_BUILD=/usr/bin/gcc (by
-# absolute path, bypassing the wrapper) via CONFIGURE_ENV in cross-build.sh.
+# sudo's configure runs a SECOND compiler probe (AX_PROG_CC_FOR_BUILD) for a
+# native BUILD compiler; left alone it falls back to the pkgsrc wrapper `gcc`
+# (which points at the vax cross-compiler) and fails ("cannot run C compiled
+# programs"). Fixed in cross-build.sh by feeding it pkgsrc's ${NATIVE_CC}
+# (/usr/bin/cc -B /usr/libexec -B /usr/bin) via CONFIGURE_ENV -- the -B flags
+# force the native as/ld. Cross-builds cleanly.
 security/sudo
