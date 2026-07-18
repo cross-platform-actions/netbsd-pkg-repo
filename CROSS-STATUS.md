@@ -12,17 +12,21 @@ resume mid-build, so it never converges. Cross-compiling builds the entire
 build-tool closure (perl, texinfo, bison, libtool, libnbcompat…) **natively for
 amd64** and only cross-compiles the target's own code — no emulated perl.
 
-## Status: bash + rsync + sudo all cross-build GREEN (all blockers SOLVED)
-- ✅ GREEN end-to-end run 29607713768 (build job success; deploy skipped on
+## Status: bash + rsync + sudo + curl all cross-build GREEN (all blockers SOLVED)
+- ✅ GREEN end-to-end run 29634708615 (build job success; deploy skipped on
   branch). Published vax set: `bash-5.3.15`, `rsync-3.4.4`, `sudo-1.9.17p1`,
-  plus rsync's vax runtime deps `lz4`, `popt`, `xxhash`, `zstd` — host tool
-  closure excluded.
-- ✅ `bash-5.3.15`, `rsync-3.4.4` and `sudo-1.9.17p1` **cross-built for vax**.
+  `curl-8.21.0`, plus vax runtime deps `libidn2`, `libunistring`, `libxml2`,
+  `nghttp2`, `xmlcatmgr`, `lz4`, `popt`, `xxhash`, `zstd` — host tool closure
+  excluded.
+- ✅ `bash-5.3.15`, `rsync-3.4.4`, `sudo-1.9.17p1` and `curl-8.21.0`
+  **cross-built for vax**.
 - ✅ The `cross/cross-libtool-base` blocker that stopped both libtool-using
   packages is fully fixed (three-part fix below). rsync + sudo cross-build clean.
 - ✅ `sudo`'s own-configure blocker is SOLVED (run 29607713768): its second
   compiler probe (`AX_PROG_CC_FOR_BUILD`) needed a native BUILD compiler; feeding
   it pkgsrc's `${NATIVE_CC}` via `CONFIGURE_ENV` fixed it. See "sudo" below.
+- ✅ `www/curl` cross-builds GREEN with NO fixes (run 29634708615, first try). See
+  "curl assessment" below.
 - ✅ Fetch is now mirror-resilient: `cdn.netbsd.org` 503 outages fall back to the
   `NetBSD/pkgsrc` GitHub mirror (see "Fetch resilience" below).
 
@@ -163,11 +167,26 @@ src tree). The two tarballs unpack to different top dirs (`pkgsrc/` vs
 The on-failure config.log dump also now greps the compiler/linker error lines
 (the confdefs.h block at the file end had pushed the real error out of tail).
 
+## curl assessment — REASONABLE, DONE (run 29634708615, first try, no fixes)
+Verdict: `www/curl` cross-builds cleanly for vax with zero additional work. The
+old perl/openssl concern never materialized. curl's default options
+(`http2 inet6 idn openssl`) build `curl-8.21.0` plus these vax runtime deps:
+`libidn2`, `libunistring`, `libxml2`, `nghttp2`, `xmlcatmgr` (and rsync's
+`lz4`/`popt`/`xxhash`/`zstd` are in the same set).
+
+Key observation: **no `openssl` or `zlib` target package is built.** curl links
+the base OpenSSL and zlib that build.sh's `distribution` already installed into
+the vax sysroot (`$CROSS_DESTDIR/usr`), so the perl-based openssl Configure — the
+historic blocker on the emulated VAX — is never invoked at all. The libtool
+users among curl's deps (libxml2, nghttp2, libidn2) just reuse the existing
+`cross-libtool-base` + `TARGET_*` machinery, and the global
+`CC_FOR_BUILD=${NATIVE_CC}` covers any build-compiler probes. Nothing curl-
+specific was needed.
+
 ## Next steps (candidates)
 1. Add a second cache layer for the native tool closure (perl/bison/texinfo/
    libtool ~16 min/run) to speed iteration.
-2. Consider re-adding `curl` (cross removes its perl/openssl blocker).
-3. This branch is ready to merge to master (delete this file on merge); the
+2. This branch is ready to merge to master (delete this file on merge); the
    deploy job is gated to master and will publish the vax set on merge.
 
 ## Retrigger
