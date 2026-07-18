@@ -118,27 +118,23 @@ All configuration is driven by plain-text lists. Add a line, push to
 | File | Purpose |
 |------|---------|
 | `config/pkglist` | One pkgsrc origin per line (e.g. `net/rsync`) |
-| `config/architectures` | One target architecture per line (see below) |
-| `config/versions` | One NetBSD version per line (e.g. `10.1`) |
 | `config/pkgsrc_branch` | The pinned pkgsrc quarterly branch to build from |
 
-### `config/architectures` format
-
-One architecture per line — the target `MACHINE_ARCH` to cross-build for
-(e.g. `vax`). Lines starting with `#` and blank lines are ignored.
+The set of NetBSD targets to build is the `matrix.include` list on the `build`
+job in [`.github/workflows/build-and-deploy.yml`](.github/workflows/build-and-deploy.yml)
+(each row is `arch` / `version` / `abi_dir` / `build_name`). Add a target by
+adding a row there.
 
 ## How the workflow is structured
 
-The workflow runs three jobs per push:
+The workflow runs two jobs per push:
 
-1. **generate-matrix** — reads `config/architectures` and `config/versions`
-   and emits a JSON matrix (architecture × version).
-2. **build** — one job per matrix entry, on `ubuntu-latest`. It restores the
-   toolchain cache, boots a NetBSD/amd64 VM via the Cross-Platform Action
-   (KVM-accelerated, `memory: 12G`, `cpu_count: 4`) and runs
-   `scripts/cross-build.sh` inside it (see *How the build works*). The built
-   vax packages are uploaded as an artifact.
-3. **deploy** — **runs only on `master`.** It merges all artifacts into one
+1. **build** — one job per target in the workflow's build matrix, on
+   `ubuntu-latest`. It restores the toolchain cache, boots a NetBSD/amd64 VM
+   via the Cross-Platform Action (KVM-accelerated, `memory: 12G`,
+   `cpu_count: 4`) and runs `scripts/cross-build.sh` inside it (see *How the
+   build works*). The built vax packages are uploaded as an artifact.
+2. **deploy** — **runs only on `master`.** It merges all artifacts into one
    tree (`NetBSD-<version>-<arch>/All/...`), generates a landing page and
    directory indexes, and deploys to GitHub Pages. Branch pushes build and
    upload artifacts but do not deploy.

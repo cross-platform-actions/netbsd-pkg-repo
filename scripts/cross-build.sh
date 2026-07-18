@@ -83,7 +83,7 @@ fetch_retry() {  # $1 = output file; $2.. = candidate URLs (in preference order)
 }
 
 # CROSS_OPSYS_VERSION is the packed integer form of the version, e.g. 10.1 ->
-# 101000 (MMmm00). Derive it so bumping config/versions needs no code change.
+# 101000 (MMmm00). Derive it so bumping TARGET_VERSION needs no code change.
 opsys_version_int() {  # $1 = version like "10.1"
     _maj="${1%%.*}"
     _min="${1#*.}"

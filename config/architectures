@@ -1,7 +1,0 @@
-# NetBSD architectures with no official prebuilt pkgsrc binaries, one per
-# line. Each is cross-compiled on a NetBSD/amd64 host (booted by the
-# Cross-Platform Action) using a NetBSD build.sh cross toolchain + sysroot;
-# this file just lists which target architectures to build for.
-#
-# Lines starting with # and blank lines are ignored.
-vax

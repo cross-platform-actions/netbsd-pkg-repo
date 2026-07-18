@@ -26,30 +26,22 @@ env:
   SRC_BRANCH: netbsd-10
 
 jobs:
-  generate-matrix:
-    name: Generate build matrix
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Generate matrix
-        id: matrix
-        run: |
-          matrix=$(sh scripts/generate-matrix.sh)
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
   build:
     name: Cross-build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
-    needs: generate-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
       fail-fast: false
+      # One entry per NetBSD target with no official prebuilt pkgsrc binaries.
+      # abi_dir matches netbsd-builder image naming (the published per-target
+      # subtree / consumer PKG_PATH); build_name is a short cache-key/log slug.
+      # To add a target, add a row here.
       matrix:
-        include: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+        include:
+          - arch: vax
+            version: "10.1"
+            abi_dir: NetBSD-10.1-vax
+            build_name: vax-101
     steps:
       - name: Checkout
         uses: actions/checkout@v6

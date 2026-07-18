@@ -20,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cache the expensive (~90 min) `build.sh` cross toolchain + sysroot as a
     single tarball keyed on the NetBSD src branch, so later runs restore it
     and finish in minutes
-- Configurable build matrix via plain-text lists: `config/architectures`,
-    `config/versions`, `config/pkglist` and `config/pkgsrc_branch`
+- Configurable packages and pkgsrc branch via plain-text lists
+    (`config/pkglist`, `config/pkgsrc_branch`); the build target matrix
+    (arch × version) is defined inline on the workflow's `build` job
 - Gate the GitHub Pages deploy to `master`; branch pushes build and upload
     artifacts but do not deploy
 - Target NetBSD 10.1 vax packages
