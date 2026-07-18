@@ -20,3 +20,9 @@ net/rsync
 # (/usr/bin/cc -B /usr/libexec -B /usr/bin) via CONFIGURE_ENV -- the -B flags
 # force the native as/ld. Cross-builds cleanly.
 security/sudo
+
+# curl: previously excluded because it needs openssl -> perl, infeasible on the
+# emulated VAX. Cross-compiling builds perl/build-tools natively as tool-deps, so
+# the open question is only whether curl's TARGET libs (openssl, zlib, nghttp2,
+# libssh2, ...) cross-compile for vax. Assessing via CI.
+www/curl
