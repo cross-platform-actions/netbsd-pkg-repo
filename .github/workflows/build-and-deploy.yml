@@ -29,7 +29,11 @@ jobs:
   build:
     name: Cross-build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    # A cache-hit run reaches packages in ~20 min; a cache-miss run rebuilds the
+    # full build.sh toolchain (~90 min) + tool closure, so ~2 h worst case. 180
+    # gives margin while capping a hung cross-platform-actions VM boot (which
+    # otherwise retries SSH until the limit) instead of squatting a runner for 5 h.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       # One entry per NetBSD target with no official prebuilt pkgsrc binaries.
