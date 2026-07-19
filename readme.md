@@ -17,22 +17,20 @@ and sysroot, then published to GitHub Pages on every push to `master`.
 
 The sibling [freebsd-pkg-repo] builds with poudriere + **QEMU user-mode
 emulation** (`binmiscctl`), running the host natively and only emulating
-target binaries — fast (5–10× slowdown). That is impossible for vax: **there
-is no qemu-user backend for vax**, only full-system [SIMH] MicroVAX 3900
-emulation, which is far slower.
+target binaries — fast (5–10× slowdown). That is not an option for vax:
+**there is no qemu-user backend for vax**, only full-system [SIMH] MicroVAX
+3900 emulation, which is far slower. Under that emulation `perl` alone (a
+transitive build dependency of nearly everything, via texinfo/bison) takes
+longer than GitHub's 6-hour job limit to compile and cannot resume
+mid-compile, so a build *inside* emulated vax never finishes.
 
-Building *inside* emulated vax proved structurally infeasible: `perl` (a
-transitive build dependency of nearly everything, via texinfo/bison, and of
-openssl) takes **longer than GitHub's 6-hour job limit** to compile on the
-single-CPU emulated VAX and cannot resume mid-compile, so it can never finish.
-
-Cross-compiling fixes this at the root. With pkgsrc's `USE_CROSS_COMPILE=yes`,
+Cross-compiling sidesteps that entirely. With pkgsrc's `USE_CROSS_COMPILE=yes`,
 the entire build-tool closure (perl, texinfo, bison, …) is built **natively as
 tool-dependencies for the amd64 host**, and a target (vax) perl is *never*
 built. Only the actual target libraries and programs are cross-compiled, on a
-fast KVM-accelerated NetBSD/amd64 VM. This keeps freebsd-pkg-repo's structure
-(config-driven lists, matrix → build → deploy, GitHub Pages) but replaces the
-build engine:
+fast KVM-accelerated NetBSD/amd64 VM. The design mirrors freebsd-pkg-repo's
+structure (config-driven lists, matrix → build → deploy, GitHub Pages), with a
+different build engine:
 
 | FreeBSD | NetBSD (here) |
 |---|---|

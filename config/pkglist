@@ -2,28 +2,24 @@
 # other Cross-Platform Action ports get from the official pkgsrc binary
 # mirrors but that have no prebuilt vax builds.
 #
-# These are cross-compiled on a NetBSD/amd64 host (USE_CROSS_COMPILE=yes), not
-# built on emulated vax. Cross-compiling builds the whole build-tool closure
-# (perl, texinfo, bison) NATIVELY as tool-dependencies and never cross-builds a
-# target perl, so the openssl/perl chain that was infeasible on the emulated
-# VAX is no longer a blocker. curl (needs openssl -> perl) is a candidate to
-# add now that cross-compiling removes that blocker.
+# They are cross-compiled on a NetBSD/amd64 host (USE_CROSS_COMPILE=yes). The
+# whole build-tool closure (perl, texinfo, bison) builds NATIVELY as
+# tool-dependencies; only the target's own code is cross-compiled.
 #
 # Lines starting with # and blank lines are ignored.
 shells/bash
 net/rsync
 
-# sudo's configure runs a SECOND compiler probe (AX_PROG_CC_FOR_BUILD) for a
-# native BUILD compiler; left alone it falls back to the pkgsrc wrapper `gcc`
+# sudo's configure runs a second compiler probe (AX_PROG_CC_FOR_BUILD) for a
+# native BUILD compiler. Without help it falls back to the pkgsrc wrapper `gcc`
 # (which points at the vax cross-compiler) and fails ("cannot run C compiled
-# programs"). Fixed in cross-build.sh by feeding it pkgsrc's ${NATIVE_CC}
-# (/usr/bin/cc -B /usr/libexec -B /usr/bin) via CONFIGURE_ENV -- the -B flags
-# force the native as/ld. Cross-builds cleanly.
+# programs"). cross-build.sh feeds it pkgsrc's ${NATIVE_CC} (/usr/bin/cc -B
+# /usr/libexec -B /usr/bin) via CONFIGURE_ENV -- the -B flags force the native
+# as/ld.
 security/sudo
 
-# curl: was excluded on the emulated VAX (needs openssl -> perl). Cross-compiling
-# builds perl/build-tools natively as tool-deps, and curl links the base
-# OpenSSL + zlib already in the vax sysroot (from build.sh distribution), so no
-# target openssl/zlib build is needed at all. Cross-builds green with no fixes;
-# vax runtime deps pulled: libidn2, libunistring, libxml2, nghttp2, xmlcatmgr.
+# curl links the base OpenSSL + zlib already in the vax sysroot (from build.sh
+# distribution), so no target openssl/zlib build is needed. Its other vax
+# runtime deps (libidn2, libunistring, libxml2, nghttp2, xmlcatmgr) cross-build
+# on the same machinery.
 www/curl

@@ -2,13 +2,11 @@
 # Cross-build NetBSD/vax pkgsrc binary packages on a NetBSD/amd64 host.
 #
 # Runs INSIDE the NetBSD/amd64 guest booted by cross-platform-actions/action,
-# as the unprivileged `runner` user (which has passwordless sudo). This
-# replaces the old emulated-vax build: instead of running `make package`
-# inside a slow SIMH MicroVAX 3900 (where perl alone exceeds GitHub's 6-hour
-# job limit), we build the vax packages by cross-compiling on the fast amd64
-# host. pkgsrc's USE_CROSS_COMPILE builds the whole build-tool closure
-# (perl/texinfo/bison) NATIVELY as tool-dependencies and never cross-builds a
-# target perl, which is what makes this finish in minutes rather than hours.
+# as the unprivileged `runner` user (which has passwordless sudo). The vax
+# packages are cross-compiled on the amd64 host. pkgsrc's USE_CROSS_COMPILE
+# builds the whole build-tool closure (perl/texinfo/bison) NATIVELY as
+# tool-dependencies and only cross-builds the target's own code -- a target
+# perl is never built, so the whole run finishes in minutes.
 #
 # The vax cross toolchain + sysroot is produced once by NetBSD's build.sh and
 # cached (see the workflow); a later run restores it and skips the ~90-minute
@@ -57,13 +55,12 @@ PACKAGES_DIR="$PKGSRCDIR/packages"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # fetch_retry OUTFILE URL...: download OUTFILE trying each candidate mirror URL
-# in order, over several rounds with backoff. The pinned pkgsrc/src tarballs
-# come from public mirrors that intermittently -- and sometimes for many
-# minutes -- return 503s (cdn.netbsd.org had a sustained outage that failed two
-# consecutive runs). A single ftp with no retry, or retries against one flaky
-# mirror, turns that into a wasted ~20-min CI run (the pkgsrc fetch re-runs every
-# build since only the toolchain is cached). Trying an alternate mirror is what
-# actually survives a full-mirror outage, so callers pass a fallback URL.
+# in order, over several rounds with backoff. The public NetBSD mirrors
+# intermittently return 503s, sometimes for many minutes at a stretch. A single
+# ftp with no retry, or retries against one flaky mirror, would waste a whole
+# ~20-min CI run (the pkgsrc fetch re-runs every build since only the toolchain
+# is cached). An alternate mirror is what survives a full-mirror outage, so
+# callers pass a fallback URL.
 fetch_retry() {  # $1 = output file; $2.. = candidate URLs (in preference order)
     _out="$1"; shift
     _round=1
@@ -107,11 +104,10 @@ SUDO="$(command -v sudo)"
 echo "passwordless sudo OK: $SUDO"
 
 # --- 1. Cross toolchain + sysroot (build.sh) --------------------------------
-# CRITICAL (see LESSONS): NetBSD base make reads /etc/mk.conf by default, and
-# our pkgsrc mk.conf must NOT leak into build.sh (it breaks distribution /
-# postinstall). So build.sh runs with a clean default MAKECONF, and we only
-# write the pkgsrc cross settings AFTER build.sh finishes. Guard against a
-# stale /etc/mk.conf from a previous step.
+# CRITICAL: NetBSD base make reads /etc/mk.conf by default, and our pkgsrc
+# mk.conf must NOT leak into build.sh (it breaks distribution / postinstall).
+# So build.sh runs with a clean default MAKECONF, and the pkgsrc cross settings
+# are written only AFTER build.sh finishes. Guard against a stale /etc/mk.conf.
 sudo rm -f /etc/mk.conf
 
 CROSS_DESTDIR="$OBJDIR/destdir.$TARGET_ARCH"
@@ -139,15 +135,15 @@ else
     ./build.sh -U -m "$TARGET_ARCH" -O "$OBJDIR" tools
     ./build.sh -U -m "$TARGET_ARCH" -O "$OBJDIR" distribution
     # Free the ~1-2 GB source tree; the toolchain + sysroot in $OBJDIR is all
-    # the cross build needs from here on. Without this the guest disk fills
-    # while writing the cache tarball ("tar: Write error" -> a truncated
-    # obj.tar got cached and poisoned every later cache-hit run).
+    # the cross build needs from here on. Without this, writing the cache
+    # tarball can fill the guest disk ("tar: Write error"), caching a truncated
+    # tarball that breaks every later cache-hit run.
     rm -rf "$SRCDIR"
     echo "===== Writing toolchain tarball for caching ====="
     mkdir -p "$TOOLCHAIN_CACHE_DIR"
     # Cache ONLY the cross toolchain and the vax sysroot, gzip-compressed.
     # Taring the whole objdir (which also holds GBs of build intermediates the
-    # package builds never need) as a raw tar overflowed the guest disk.
+    # package builds never need) as a raw tar would overflow the guest disk.
     # Paths are relative (tar'd from within $OBJDIR) so it extracts cleanly.
     ( cd "$OBJDIR" && tar -czpf "$TOOLCHAIN_TARBALL" tooldir.NetBSD-* "destdir.$TARGET_ARCH" )
     # Verify the tarball is complete before it can be cached, so a truncated
@@ -189,13 +185,13 @@ fi
 # --- 3+4. Write the pkgsrc cross mk.conf ------------------------------------
 # pkgsrc's bsd.prefs.mk requires a CROSS_<var> for EVERY entry in its
 # CROSSVARS list, or it aborts ("USE_CROSS_COMPILE=yes but missing cross
-# variable settings"). Hand-enumerating that list is fragile -- an earlier
-# attempt set CROSS_OS_VARIANT but the list actually wants
-# CROSS_LOWER_OS_VARIANT, and hand-computed CROSS_OPSYS_VERSION. Host and
-# target are both NetBSD ${TARGET_VERSION}, differing only in MACHINE_ARCH, so
-# derive every CROSS_<var> from THIS host's own value (with a clean MAKECONF
-# so our file doesn't recurse) and override only MACHINE_ARCH. Deriving the
-# whole list means a pkgsrc CROSSVARS change can't silently break us.
+# variable settings"). Hand-enumerating that list is fragile -- it wants the
+# exact names (e.g. CROSS_LOWER_OS_VARIANT, not CROSS_OS_VARIANT) and a
+# correctly packed CROSS_OPSYS_VERSION. Host and target are both NetBSD
+# ${TARGET_VERSION}, differing only in MACHINE_ARCH, so derive every CROSS_<var>
+# from THIS host's own value (with a clean MAKECONF so our file doesn't recurse)
+# and override only MACHINE_ARCH. Deriving the whole list means a pkgsrc
+# CROSSVARS change can't silently break us.
 # SU_CMD escalates via passwordless sudo (not su, which has no TTY). This file
 # is passed as MAKECONF ONLY on the pkgsrc make lines below -- never exported,
 # or it would leak into build.sh.
@@ -203,13 +199,13 @@ show_native() {  # $1 = VARNAME -> its value on this host
     ( cd "$PKGSRCDIR/pkgtools/digest" && \
       env -u MAKECONF MAKECONF=/dev/null make show-var VARNAME="$1" )
 }
-# cross/cross-libtool-base is why sudo/rsync need TARGET_*: it declares
-# LIBTOOL_CROSS_COMPILE=yes, which makes bsd.prefs.mk run its "switcheroo" --
-# `${_v_}=${TARGET_${_v_}}` for every CROSSVARS entry -- so the package is
-# BUILT natively but NAMED for the target. With TARGET_MACHINE_ARCH unset there
-# MACHINE_ARCH (hence MACHINE_PLATFORM) comes out empty and its PKGNAME/WRKDIR
-# degrade to `NetBSD-10.1-`, so pkg_add can't find the built pkg -- the exact
-# sudo/rsync blocker.
+# cross/cross-libtool-base (pulled in by any libtool-using target, e.g. sudo
+# and rsync) is why TARGET_* must be set: it declares LIBTOOL_CROSS_COMPILE=yes,
+# which makes bsd.prefs.mk run its "switcheroo" -- `${_v_}=${TARGET_${_v_}}` for
+# every CROSSVARS entry -- so the package is BUILT natively but NAMED for the
+# target. With TARGET_MACHINE_ARCH unset there MACHINE_ARCH (hence
+# MACHINE_PLATFORM) comes out empty and its PKGNAME/WRKDIR degrade to
+# `NetBSD-10.1-`, so pkg_add can't find the built pkg.
 #
 # TARGET_* must reach cross-libtool-base in TWO places, each with its own trap:
 #
@@ -267,8 +263,8 @@ done
     # read as a makefile): ${NATIVE_CC} is `/usr/bin/cc -B /usr/libexec -B
     # /usr/bin` (mk/tools/tools.NetBSD.mk) -- the -B flags make cc use the NATIVE
     # as/ld from /usr/libexec and /usr/bin instead of the vax cross as/ld the
-    # pkgsrc wrapper puts first on PATH (a bare /usr/bin/gcc without -B picked up
-    # the vax as/ld and failed with "C compiler cannot create executables"). The
+    # pkgsrc wrapper puts first on PATH (without -B, cc picks up the vax as/ld
+    # and fails with "C compiler cannot create executables"). The
     # :Q quoting is required: NATIVE_CC contains spaces and CONFIGURE_ENV is a
     # token list, so :Q keeps each value one argument. A native build compiler is
     # correct for ANY cross package, so set it globally. Single-quoted so the
@@ -321,10 +317,10 @@ _ncc="$( cd "$PKGSRCDIR/pkgtools/digest" && \
          make show-var VARNAME=NATIVE_CC MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
 echo "NATIVE_CC = [$_ncc]"
 
-# cross/cross-libtool-base is the sudo/rsync blocker: its LIBTOOL_CROSS_COMPILE
-# switcheroo derives MACHINE_PLATFORM from TARGET_MACHINE_ARCH, so confirm that
-# resolves to a target-arch platform (not the empty `NetBSD-<ver>-`) before we
-# spend a package build discovering it the hard way.
+# cross/cross-libtool-base's LIBTOOL_CROSS_COMPILE switcheroo derives
+# MACHINE_PLATFORM from TARGET_MACHINE_ARCH, so confirm that resolves to a
+# target-arch platform (not the empty `NetBSD-<ver>-`) before we spend a full
+# package build discovering it the hard way.
 if [ -d "$PKGSRCDIR/cross/cross-libtool-base" ]; then
     _p="$( cd "$PKGSRCDIR/cross/cross-libtool-base" && \
            make show-var VARNAME=MACHINE_PLATFORM MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS )"
