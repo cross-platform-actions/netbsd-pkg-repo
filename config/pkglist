@@ -1,15 +1,25 @@
-# One pkgsrc package origin (category/name) per line. These are the
-# packages the other Cross-Platform Action ports get from official pkgsrc
-# binary mirrors but that have no prebuilt vax builds.
+# One pkgsrc package origin (category/name) per line. These are packages the
+# other Cross-Platform Action ports get from the official pkgsrc binary
+# mirrors but that have no prebuilt vax builds.
 #
-# NOTE: curl is intentionally omitted. It needs openssl, and openssl needs
-# perl to build; perl takes far longer than GitHub's 6-hour job limit to
-# compile on the emulated VAX and can't resume mid-compile, so it can never
-# finish. curl's HTTP-fetch role is already covered by NetBSD base ftp(1).
-# rsync is kept but patched (see remote-build.sh) to drop its openssl
-# dependency for the same reason.
+# They are cross-compiled on a NetBSD/amd64 host (USE_CROSS_COMPILE=yes). The
+# whole build-tool closure (perl, texinfo, bison) builds NATIVELY as
+# tool-dependencies; only the target's own code is cross-compiled.
 #
 # Lines starting with # and blank lines are ignored.
 shells/bash
-security/sudo
 net/rsync
+
+# sudo's configure runs a second compiler probe (AX_PROG_CC_FOR_BUILD) for a
+# native BUILD compiler. Without help it falls back to the pkgsrc wrapper `gcc`
+# (which points at the vax cross-compiler) and fails ("cannot run C compiled
+# programs"). cross-build.sh feeds it pkgsrc's ${NATIVE_CC} (/usr/bin/cc -B
+# /usr/libexec -B /usr/bin) via CONFIGURE_ENV -- the -B flags force the native
+# as/ld.
+security/sudo
+
+# curl links the base OpenSSL + zlib already in the vax sysroot (from build.sh
+# distribution), so no target openssl/zlib build is needed. Its other vax
+# runtime deps (libidn2, libunistring, libxml2, nghttp2, xmlcatmgr) cross-build
+# on the same machinery.
+www/curl

@@ -1,7 +1,0 @@
-# NetBSD architectures with no official prebuilt pkgsrc binaries, one per
-# line. The Cross-Platform Action boots the VM for each (NetBSD/vax runs on
-# the SIMH MicroVAX 3900 simulator); this file just lists which architectures
-# to build for.
-#
-# Lines starting with # and blank lines are ignored.
-vax
