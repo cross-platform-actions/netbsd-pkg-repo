@@ -86,6 +86,22 @@ jobs:
           restore-keys: |
             toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-v2-
 
+      # Second cache layer: the native host build-tool closure (perl, bison,
+      # texinfo, libtool-base, gettext-*, ...) that pkgsrc installs into /usr/pkg
+      # to run the cross build. Rebuilding it costs ~16 min every run; the guest
+      # snapshots the installed state to this tarball and restores it next time.
+      # Keyed on the pinned pkgsrc branch (tool versions change with it) plus a
+      # version suffix to rotate the cache; unique per run so save always writes,
+      # with the restore-keys prefix reusing the newest snapshot.
+      - name: Restore tool-closure cache
+        if: ${{ !inputs.mock_build }}
+        uses: actions/cache/restore@v4
+        with:
+          path: toolpkg-cache
+          key: toolpkg-${{ matrix.build_name }}-${{ steps.cfg.outputs.pkgsrc_branch }}-v1-${{ github.run_id }}
+          restore-keys: |
+            toolpkg-${{ matrix.build_name }}-${{ steps.cfg.outputs.pkgsrc_branch }}-v1-
+
       - name: Cross-build packages on NetBSD/amd64
         if: ${{ !inputs.mock_build }}
         uses: cross-platform-actions/action@v1.3.0
@@ -119,6 +135,16 @@ jobs:
         with:
           path: toolchain-cache
           key: toolchain-${{ matrix.build_name }}-${{ env.SRC_BRANCH }}-v2-${{ github.run_id }}
+
+      # Save the host tool-closure snapshot the guest wrote (on a miss) or
+      # restored (on a hit); either way it's re-cached under this run's key so
+      # the restore-keys prefix keeps finding the newest one.
+      - name: Save tool-closure cache
+        if: ${{ always() && !inputs.mock_build }}
+        uses: actions/cache/save@v5
+        with:
+          path: toolpkg-cache
+          key: toolpkg-${{ matrix.build_name }}-${{ steps.cfg.outputs.pkgsrc_branch }}-v1-${{ github.run_id }}
 
       - name: Prepare site tarball
         run: |

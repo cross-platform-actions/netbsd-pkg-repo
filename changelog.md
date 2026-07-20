@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cache the expensive (~90 min) `build.sh` cross toolchain + sysroot as a
     single tarball keyed on the NetBSD src branch, so later runs restore it
     and finish in minutes
+- Cache the native amd64 host build-tool closure (perl, bison, texinfo,
+    libtool-base, gettext-*, ...) as a second layer: `scripts/cross-build.sh`
+    snapshots its installed state (`/usr/pkg` + the pkg database) after a miss
+    and restores it on later runs so pkgsrc skips the ~16 min rebuild, keyed on
+    the pinned pkgsrc branch. Cuts a cache-hit build job from ~30 min to ~10 min
 - Configurable packages and pkgsrc branch via plain-text lists
     (`config/pkglist`, `config/pkgsrc_branch`); the build target matrix
     (arch × version) is defined inline on the workflow's `build` job

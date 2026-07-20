@@ -48,6 +48,12 @@ WORKSPACE="${WORKSPACE:?WORKSPACE must be set}"
 OBJDIR="$HOME/obj.$TARGET_ARCH"
 TOOLCHAIN_CACHE_DIR="$WORKSPACE/toolchain-cache"
 TOOLCHAIN_TARBALL="$TOOLCHAIN_CACHE_DIR/obj.tgz"
+# Second cache layer: the native amd64 host build-tool closure (perl, bison,
+# texinfo, libtool-base, gettext-*, gmake, m4, help2man, pkgconf, p5-*, ...)
+# built USE_CROSS_COMPILE=no as tool-deps and installed into /usr/pkg. Rebuilding
+# it costs ~16 min every run; snapshot the installed state and restore it instead.
+TOOLPKG_CACHE_DIR="$WORKSPACE/toolpkg-cache"
+TOOLPKG_TARBALL="$TOOLPKG_CACHE_DIR/toolpkg.tgz"
 PKGSRCDIR="$HOME/pkgsrc"
 SRCDIR="$HOME/src"
 PKGSRC_MAKECONF="$PKGSRCDIR/mk.conf"
@@ -332,6 +338,31 @@ if [ -d "$PKGSRCDIR/cross/cross-libtool-base" ]; then
 fi
 echo "cross-config OK"
 
+# --- 5.5 Restore the native host tool closure (second cache layer) ----------
+# The host build-tool closure (perl, bison, texinfo, libtool-base, gettext-*,
+# gmake, m4, help2man, pkgconf, p5-*, ...) is built USE_CROSS_COMPILE=no as amd64
+# tool-dependencies and installed into /usr/pkg via DEPENDS_TARGET=package-install
+# -- a ~16-min rebuild EVERY run, since only the vax toolchain is cached. Snapshot
+# the INSTALLED state (LOCALBASE tree + pkg database) after a miss (below) and
+# restore it here: pkgsrc's dependency checks then see the tools already
+# installed (pkg_info) and skip building them. The snapshot is a strict superset
+# of the VM image's stock /usr/pkg (image base + our tools), and the pkgsrc branch
+# is pinned (and part of the cache key), so restoring it over the identical stock
+# base just adds the tools. Target cross-builds are unaffected -- they only need
+# these tools present, and use CROSS_DESTDIR (not /usr/pkg) for target libs.
+# Ensure the cache dir exists so the workflow's always()-Save step never fails
+# on a missing path, even if this run dies before writing the snapshot below.
+mkdir -p "$TOOLPKG_CACHE_DIR"
+TOOLPKG_CACHE_HIT=""
+if [ -f "$TOOLPKG_TARBALL" ]; then
+    echo "===== TOOL CLOSURE CACHE HIT: restoring $TOOLPKG_TARBALL ====="
+    sudo tar -xzpf "$TOOLPKG_TARBALL" -C /
+    TOOLPKG_CACHE_HIT=yes
+    echo "installed packages after restore: $(pkg_info 2>/dev/null | wc -l)"
+else
+    echo "===== TOOL CLOSURE CACHE MISS: host tools will be built this run ====="
+fi
+
 # --- 6. Cross-build each requested origin -----------------------------------
 # BATCH=yes suppresses prompts. DEPENDS_TARGET=package-install both packages
 # each dependency (so the repo is self-contained) and installs it (so
@@ -394,6 +425,33 @@ while IFS= read -r origin || [ -n "$origin" ]; do
       make clean CLEANDEPENDS=yes MAKECONF="$PKGSRC_MAKECONF" $TARGET_VARS ) \
         >/dev/null 2>&1 || true
 done < "$SCRIPT_DIR/../config/pkglist"
+
+# --- 6.5 Snapshot the host tool closure for caching (only on a miss) --------
+# On a miss we just built the whole tool closure into /usr/pkg; snapshot the
+# installed state so the next run restores it (step 5.5) instead of rebuilding.
+# Capture the LOCALBASE tree plus the pkg database (PKG_DBDIR, queried so a
+# non-default location is handled; skipped when it already lives under
+# /usr/pkg). Written as root (parts of /usr/pkg and the db are root-only), then
+# chowned to the runner so the workspace sync / actions/cache can read it, and
+# verified with tar -tzf so a truncated write fails loudly here instead of
+# poisoning a future cache-hit run (same discipline as the toolchain tarball).
+if [ -z "$TOOLPKG_CACHE_HIT" ]; then
+    echo "===== Writing tool-closure tarball for caching ====="
+    mkdir -p "$TOOLPKG_CACHE_DIR"
+    _dbdir="$(pkg_admin config-var PKG_DBDIR 2>/dev/null || true)"
+    [ -n "$_dbdir" ] || _dbdir=/usr/pkg/pkgdb
+    _paths="usr/pkg"
+    case "$_dbdir" in
+        /usr/pkg/*|usr/pkg/*) : ;;              # under LOCALBASE, already captured
+        /*) _paths="$_paths ${_dbdir#/}" ;;     # separate absolute db (e.g. var/db/pkg)
+        *)  _paths="$_paths $_dbdir" ;;
+    esac
+    echo "tool-closure snapshot (rel /): $_paths ; PKG_DBDIR=$_dbdir"
+    sudo tar -czpf "$TOOLPKG_TARBALL" -C / $_paths
+    sudo chown "$(id -u):$(id -g)" "$TOOLPKG_TARBALL"
+    tar -tzf "$TOOLPKG_TARBALL" >/dev/null
+    echo "tool-closure tarball size: $(ls -lh "$TOOLPKG_TARBALL" | awk '{print $5}')"
+fi
 
 # --- 7. Confirm target arch and generate the summary index ------------------
 # Collect every $TARGET_ARCH package from the cross PACKAGES dir (target build
