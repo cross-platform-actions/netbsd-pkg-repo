@@ -1,59 +1,54 @@
 # NetBSD Package Repository
 
-Binary NetBSD [pkgsrc] packages built for CPU architectures not covered by
-the official NetBSD package mirrors (e.g. vax).
+Binary NetBSD [pkgsrc] packages built for CPU architectures not covered by the
+official NetBSD package mirrors (e.g. vax).
 
-The packages are **cross-compiled on a NetBSD/amd64 host** (booted by the
-[Cross-Platform Action]) using a [NetBSD `build.sh`][build.sh] cross toolchain
-and sysroot, then published to GitHub Pages on every push to `master`.
+The packages are **cross-compiled on a NetBSD/amd64 host** using a
+[NetBSD `build.sh`][build.sh] cross toolchain and sysroot, then published to
+GitHub Pages on every push to `master`.
 
-[Cross-Platform Action]: https://github.com/cross-platform-actions/action
+Cross-compiling is used because the target architectures are slow or
+impractical to build on natively: a full package set built under system
+emulation cannot finish within CI time limits. With pkgsrc's
+`USE_CROSS_COMPILE=yes` the entire build-tool closure (perl, texinfo, bison, …)
+is built **natively as tool-dependencies for the amd64 host**, and only the
+actual target libraries and programs are cross-compiled, on a fast
+KVM-accelerated NetBSD/amd64 VM.
 
 [pkgsrc]: https://www.pkgsrc.org/
 [build.sh]: https://www.netbsd.org/docs/guide/en/chap-build.html
-[netbsd-builder]: https://github.com/cross-platform-actions/netbsd-builder
+[Cross-Platform Action]: https://github.com/cross-platform-actions/action
 
-## Why cross-compile instead of emulate?
+## Supported targets
 
-The sibling [freebsd-pkg-repo] builds with poudriere + **QEMU user-mode
-emulation** (`binmiscctl`), running the host natively and only emulating
-target binaries — fast (5–10× slowdown). That is not an option for vax:
-**there is no qemu-user backend for vax**, only full-system [SIMH] MicroVAX
-3900 emulation, which is far slower. Under that emulation `perl` alone (a
-transitive build dependency of nearly everything, via texinfo/bison) takes
-longer than GitHub's 6-hour job limit to compile and cannot resume
-mid-compile, so a build *inside* emulated vax never finishes.
+| Architecture | NetBSD version |
+|--------------|----------------|
+| vax          | 10.1           |
 
-Cross-compiling sidesteps that entirely. With pkgsrc's `USE_CROSS_COMPILE=yes`,
-the entire build-tool closure (perl, texinfo, bison, …) is built **natively as
-tool-dependencies for the amd64 host**, and a target (vax) perl is *never*
-built. Only the actual target libraries and programs are cross-compiled, on a
-fast KVM-accelerated NetBSD/amd64 VM. The design mirrors freebsd-pkg-repo's
-structure (config-driven lists, matrix → build → deploy, GitHub Pages), with a
-different build engine:
+## Using the repository
 
-| FreeBSD | NetBSD (here) |
-|---|---|
-| poudriere | `bmake package` (pkgsrc) with `USE_CROSS_COMPILE=yes` |
-| qemu-user-static + `binmiscctl` | NetBSD `build.sh` cross toolchain + sysroot |
-| Cross-Platform Action FreeBSD VM | Cross-Platform Action **NetBSD/amd64** VM |
-| `pkg` + `repos/custom.conf` | `pkg_add` + `PKG_PATH` |
+On a NetBSD vax system, point `PKG_PATH` at the target's `All/` directory and
+install with the base `pkg_add` (no pkgin bootstrap required):
 
-[freebsd-pkg-repo]: https://github.com/cross-platform-actions/freebsd-pkg-repo
-[SIMH]: https://opensimh.org/
+```sh
+export PKG_PATH="https://<user>.github.io/netbsd-pkg-repo/NetBSD-10.1-vax/All"
+pkg_add bash sudo rsync
+```
+
+Replace `<user>` with the GitHub user or organization hosting this repository.
 
 ## How the build works
 
-Everything runs inside the NetBSD/amd64 guest booted by the Cross-Platform
-Action, as the unprivileged `runner` user (which has passwordless `sudo`).
-`scripts/cross-build.sh` orchestrates it:
+Everything runs inside the NetBSD/amd64 guest booted by the
+[Cross-Platform Action], as the unprivileged `runner` user (which has
+passwordless `sudo`). `scripts/cross-build.sh` orchestrates it:
 
-1. **Cross toolchain + sysroot.** If the cached toolchain tarball is present
-   it is extracted; otherwise `build.sh -U -m vax -O <objdir> tools`
-   (~12 min) then `distribution` (~75 min) produce the cross gcc/binutils
-   (`TOOLDIR`) and the target headers+libraries sysroot (`CROSS_DESTDIR`).
-   `build.sh` runs **unprivileged** and with a clean default `MAKECONF` — the
-   pkgsrc cross settings are deliberately kept out of it.
+1. **Cross toolchain + sysroot.** If the cached toolchain tarball is present it
+   is extracted; otherwise `build.sh -U -m vax -O <objdir> tools` (~12 min) then
+   `distribution` (~75 min) produce the cross gcc/binutils (`TOOLDIR`) and the
+   target headers+libraries sysroot (`CROSS_DESTDIR`). `build.sh` runs
+   **unprivileged** and with a clean default `MAKECONF` — the pkgsrc cross
+   settings are deliberately kept out of it.
 2. **pkgsrc.** The pinned quarterly tree is fetched with base `ftp(1)` (no
    git/curl needed) and extracted.
 3. **Cross-build.** Each origin in `config/pkglist` is built with
@@ -82,36 +77,17 @@ exported globally, so it cannot leak into `build.sh` and break its
 ## Toolchain caching
 
 The `build.sh` toolchain + sysroot is expensive (~90 min) but stable, so it is
-cached and reused: later runs restore it and finish in minutes instead of
-hours. The objdir is multi-GB and ~100k files, which is slow to rsync across
-the guest/runner boundary, so it is moved as a **single tarball**
-(`toolchain-cache/obj.tar`) under the workspace and persisted on the runner
-with `actions/cache`, keyed on the target arch+version and the NetBSD
-`SRC_BRANCH`. Bumping `SRC_BRANCH` invalidates the cache and rebuilds the
-toolchain.
-
-## Supported targets
-
-| Architecture | NetBSD version |
-|--------------|----------------|
-| vax          | 10.1           |
-
-## Using the repository
-
-On a NetBSD vax system, point `PKG_PATH` at the target's `All/` directory and
-install with the base `pkg_add` (no pkgin bootstrap required):
-
-```sh
-export PKG_PATH="https://<user>.github.io/netbsd-pkg-repo/NetBSD-10.1-vax/All"
-pkg_add bash sudo rsync
-```
-
-Replace `<user>` with the GitHub user or organization hosting this repository.
+cached and reused: later runs restore it and finish in minutes instead of hours.
+The objdir is multi-GB and ~100k files, which is slow to rsync across the
+guest/runner boundary, so it is moved as a **single tarball**
+(`toolchain-cache/obj.tar`) under the workspace and persisted on the runner with
+`actions/cache`, keyed on the target arch+version and the NetBSD `SRC_BRANCH`.
+Bumping `SRC_BRANCH` invalidates the cache and rebuilds the toolchain.
 
 ## Adding things
 
-All configuration is driven by plain-text lists. Add a line, push to
-`master`, and the workflow rebuilds the repository.
+All configuration is driven by plain-text lists. Add a line, push to `master`,
+and the workflow rebuilds the repository.
 
 | File | Purpose |
 |------|---------|
@@ -128,14 +104,14 @@ adding a row there.
 The workflow runs two jobs per push:
 
 1. **build** — one job per target in the workflow's build matrix, on
-   `ubuntu-latest`. It restores the toolchain cache, boots a NetBSD/amd64 VM
-   via the Cross-Platform Action (KVM-accelerated, `memory: 12G`,
-   `cpu_count: 4`) and runs `scripts/cross-build.sh` inside it (see *How the
-   build works*). The built vax packages are uploaded as an artifact.
-2. **deploy** — **runs only on `master`.** It merges all artifacts into one
-   tree (`NetBSD-<version>-<arch>/All/...`), generates a landing page and
-   directory indexes, and deploys to GitHub Pages. Branch pushes build and
-   upload artifacts but do not deploy.
+   `ubuntu-latest`. It restores the toolchain cache, boots a NetBSD/amd64 VM via
+   the Cross-Platform Action (KVM-accelerated, `memory: 12G`, `cpu_count: 4`)
+   and runs `scripts/cross-build.sh` inside it (see *How the build works*). The
+   built vax packages are uploaded as an artifact.
+2. **deploy** — **runs only on `master`.** It merges all artifacts into one tree
+   (`NetBSD-<version>-<arch>/All/...`), generates a landing page and directory
+   indexes, and deploys to GitHub Pages. Branch pushes build and upload
+   artifacts but do not deploy.
 
 ## Setup
 
