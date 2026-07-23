@@ -1,24 +1,28 @@
-name: Build and Deploy Packages
+name: Build and Release Packages
 
+# Entry points:
+#   * pushing a version tag (v*) builds AND creates DRAFT releases for review;
+#   * pushing any branch builds only, to validate the change (no release);
+#   * publishing a release deploys the Pages landing page.
+# workflow_dispatch builds + drafts too, for testing (see mock_build).
 on:
   push:
     branches:
       - '*'
+    tags:
+      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       mock_build:
-        description: "Skip the VM build; generate fake packages to test the deploy path"
+        description: "Skip the VM build; generate fake packages to test the release/deploy path"
         type: boolean
         default: false
 
+# Least privilege by default; individual jobs elevate what they need.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 # NetBSD src branch used to build the cross toolchain. The toolchain cache is
 # keyed on this, so bumping it triggers a fresh (uncached) toolchain build.
@@ -28,6 +32,9 @@ env:
 jobs:
   build:
     name: Cross-build ${{ matrix.arch }} (NetBSD ${{ matrix.version }})
+    # Runs on tag pushes, branch pushes (validation only) and manual dispatch.
+    # The `release: published` event only deploys (below); it must not rebuild.
+    if: ${{ github.event_name != 'release' }}
     runs-on: ubuntu-latest
     # A cache-hit run reaches packages in ~20 min; a cache-miss run rebuilds the
     # full build.sh toolchain (~90 min) + tool closure, so ~2 h worst case. 180
@@ -37,9 +44,9 @@ jobs:
     strategy:
       fail-fast: false
       # One entry per NetBSD target with no official prebuilt pkgsrc binaries.
-      # abi_dir matches netbsd-builder image naming (the published per-target
-      # subtree / consumer PKG_PATH); build_name is a short cache-key/log slug.
-      # To add a target, add a row here.
+      # abi_dir matches netbsd-builder image naming; it names the artifact and
+      # the release tag prefix (<abi_dir>--<version>). build_name is a short
+      # cache-key/log slug. To add a target, add a row here.
       matrix:
         include:
           - arch: vax
@@ -50,7 +57,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Shortcut for iterating on the deploy path: dispatch with
+      # Shortcut for iterating on the release/deploy path: dispatch with
       # mock_build=true to generate a handful of empty .tgz files plus a
       # summary index, so the rest of the pipeline runs without a VM build.
       - name: Mock build -- generate fake packages
@@ -146,27 +153,87 @@ jobs:
           path: toolpkg-cache
           key: toolpkg-${{ matrix.build_name }}-${{ steps.cfg.outputs.pkgsrc_branch }}-v1-${{ github.run_id }}
 
-      - name: Prepare site tarball
-        run: |
-          abi_dir="${{ matrix.abi_dir }}"
-          mkdir -p "_site/$abi_dir"
-          cp -R packages/. "_site/$abi_dir/"
-          tar -C _site -czf site.tar.gz .
-
-      - name: Upload build artifact
+      # The flat package set (every .tgz plus the generated pkg_summary.gz) is
+      # exactly what a release carries as assets and what pkgsrc's PKG_PATH
+      # fetches. Uploaded on every branch so a change is reviewable from a
+      # green run; only master turns it into an immutable release below.
+      # Keyed on abi_dir (not build_name) so the release job can derive each
+      # target's ABI straight from the artifact name -- no second matrix to keep
+      # in sync with this one.
+      - name: Upload package artifact
         uses: actions/upload-artifact@v7
         with:
-          name: site-${{ matrix.build_name }}
-          path: site.tar.gz
+          name: packages-${{ matrix.abi_dir }}
+          path: packages/All
 
-  # Deploy only from master. Branch pushes still build and upload artifacts
-  # (so a change can be reviewed from a green run) but must not publish to the
-  # live Pages site.
-  deploy:
-    name: Deploy to GitHub Pages
+  # Turn each target's packages into a DRAFT GitHub release (one per target,
+  # tagged <abi>--<version> from the pushed tag). Drafts are mutable and hidden
+  # from consumers; a maintainer reviews then publishes them. Publishing is what
+  # makes a release immutable -- assets locked, tag protected, signed attestation
+  # generated (requires the repo/org "Immutable releases" setting, see readme
+  # "Setup") -- and fires the deploy job below via the `release: published`
+  # event. The releases are the artifact store consumers pin PKG_PATH to; Pages
+  # is only an index.
+  release:
+    name: Draft releases
     needs: build
-    if: ${{ github.ref == 'refs/heads/master' }}
+    # Only version-tag pushes and manual dispatch cut releases; a plain branch
+    # push builds (above) to validate the change but stops short of a release.
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the draft release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Each build target uploaded one `packages-<abi_dir>` artifact; download
+      # them all into per-artifact subdirectories.
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: packages-*
+
+      # One draft release per target. The ABI comes from the artifact directory
+      # name (packages-<abi_dir>), so this loop needs no matrix. VERSION is the
+      # pushed tag (github.ref_name on a tag push); a manual dispatch has no tag,
+      # so fall back to a run-scoped prerelease version for test drafts.
+      - name: Create draft releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -eu
+          if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+              VERSION="$GITHUB_REF_NAME"
+          else
+              VERSION="v0.0.0-dispatch.${GITHUB_RUN_NUMBER}"
+          fi
+          export VERSION
+          for d in artifacts/packages-*; do
+              [ -d "$d" ] || continue
+              ABI_DIR="${d#artifacts/packages-}" \
+                  sh scripts/deploy/create-release.sh "$d"
+          done
+
+  # Landing page only -- no packages are served from Pages. It lists each
+  # target's newest published release with a copy-paste PKG_PATH and
+  # verification steps. Triggered by publishing a release (not the tag push), so
+  # it has no `needs`: it runs standalone on the `release: published` event and
+  # regenerates the page from whatever published releases now exist.
+  deploy:
+    name: Deploy landing page to GitHub Pages
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    # Only the Pages deploy needs serializing; builds/releases may overlap.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read    # gh release list
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -174,22 +241,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-          pattern: site-*
-
-      - name: Extract tarballs into _site
-        run: sh scripts/deploy/extract-artifacts.sh
-
       - name: Generate landing page
         env:
-          BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: sh scripts/deploy/generate-landing-page.sh
-
-      - name: Generate directory indexes
-        run: sh scripts/deploy/generate-directory-indexes.sh
 
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v5

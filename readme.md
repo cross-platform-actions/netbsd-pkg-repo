@@ -4,8 +4,15 @@ Binary NetBSD [pkgsrc] packages built for CPU architectures not covered by the
 official NetBSD package mirrors (e.g. vax).
 
 The packages are **cross-compiled on a NetBSD/amd64 host** using a
-[NetBSD `build.sh`][build.sh] cross toolchain and sysroot, then published to
-GitHub Pages on every push to `master`.
+[NetBSD `build.sh`][build.sh] cross toolchain and sysroot, then published as
+**immutable GitHub releases**. Pushing a version tag (`v*`) builds the packages
+and creates a **draft** release per target; a maintainer reviews and publishes
+it. Publishing is what makes the release immutable — its assets are locked, its
+tag is protected, and GitHub generates a signed
+[release attestation][immutable-releases] — so a consumer that pins a release
+gets exactly those bytes, and not even a compromised maintainer account can
+tamper with an already-published release. Publishing also refreshes the GitHub
+Pages landing page, which hosts only a small index of the releases.
 
 Cross-compiling is used because the target architectures are slow or
 impractical to build on natively: a full package set built under system
@@ -18,6 +25,7 @@ KVM-accelerated NetBSD/amd64 VM.
 [pkgsrc]: https://www.pkgsrc.org/
 [build.sh]: https://www.netbsd.org/docs/guide/en/chap-build.html
 [Cross-Platform Action]: https://github.com/cross-platform-actions/action
+[immutable-releases]: https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases
 
 ## Supported targets
 
@@ -27,15 +35,39 @@ KVM-accelerated NetBSD/amd64 VM.
 
 ## Using the repository
 
-On a NetBSD vax system, point `PKG_PATH` at the target's `All/` directory and
-install with the base `pkg_add` (no pkgin bootstrap required):
+Each version tag publishes a per-target immutable release tagged
+`<abi>--<version>` (e.g. `NetBSD-10.1-vax--v1.2.0`), whose flat set of `.tgz`
+assets plus `pkg_summary.gz` is exactly what pkgsrc's `PKG_PATH` fetches. The
+[landing page] lists the newest published release per target with a
+ready-to-copy `PKG_PATH`; the [releases page] lists every version.
+
+On a NetBSD vax system, point `PKG_PATH` at a release's download URL and install
+with the base `pkg_add` (no pkgin bootstrap required):
 
 ```sh
-export PKG_PATH="https://<user>.github.io/netbsd-pkg-repo/NetBSD-10.1-vax/All"
+export PKG_PATH="https://github.com/<user>/netbsd-pkg-repo/releases/download/<tag>"
 pkg_add bash sudo rsync
 ```
 
-Replace `<user>` with the GitHub user or organization hosting this repository.
+Replace `<user>` with the GitHub user or organization hosting this repository
+and `<tag>` with the release tag you want to pin.
+
+### Verifying integrity
+
+Pinning a tag makes a build reproducible; the release attestation lets you
+verify the bytes have not been tampered with. With the [GitHub CLI]:
+
+```sh
+gh release verify --repo <user>/netbsd-pkg-repo <tag>
+gh release verify-asset --repo <user>/netbsd-pkg-repo <tag> <package>.tgz
+```
+
+`verify` confirms the release has a valid attestation; `verify-asset` confirms a
+local file matches the attested asset.
+
+[landing page]: https://<user>.github.io/netbsd-pkg-repo/
+[releases page]: https://github.com/<user>/netbsd-pkg-repo/releases
+[GitHub CLI]: https://cli.github.com/
 
 ## How the build works
 
@@ -59,7 +91,8 @@ passwordless `sudo`). `scripts/cross-build.sh` orchestrates it:
    installation via passwordless `sudo` (base `su` fails non-interactively).
 4. **Publish.** The resulting vax `.tgz` and a generated `pkg_summary.gz` are
    copied into the workspace, pulled back to the runner, and uploaded as an
-   artifact for the deploy job.
+   artifact. The `release` job turns that artifact into a draft GitHub release,
+   which becomes immutable once a maintainer publishes it.
 
 An early, cheap assertion confirms pkgsrc actually resolves `SU_CMD` to sudo,
 `MACHINE_ARCH=vax` and `USE_CROSS_COMPILE=yes` **before** any long build, so a
@@ -86,8 +119,8 @@ Bumping `SRC_BRANCH` invalidates the cache and rebuilds the toolchain.
 
 ## Adding things
 
-All configuration is driven by plain-text lists. Add a line, push to `master`,
-and the workflow rebuilds the repository.
+All configuration is driven by plain-text lists. Add a line, then cut a release
+by pushing a version tag (below) to rebuild the repository.
 
 | File | Purpose |
 |------|---------|
@@ -99,24 +132,53 @@ job in [`.github/workflows/build-and-deploy.yml`](.github/workflows/build-and-de
 (each row is `arch` / `version` / `abi_dir` / `build_name`). Add a target by
 adding a row there.
 
+## Cutting a release
+
+```sh
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+This builds every target and creates a **draft** release per target (tagged
+`<abi>--v1.2.0`). Review the drafts on the repository's releases page, then
+**publish** each one. Publishing makes it immutable and refreshes the landing
+page. Nothing is served to consumers until you publish.
+
 ## How the workflow is structured
 
-The workflow runs two jobs per push:
+The workflow has two independent entry points and three jobs:
 
-1. **build** — one job per target in the workflow's build matrix, on
-   `ubuntu-latest`. It restores the toolchain cache, boots a NetBSD/amd64 VM via
-   the Cross-Platform Action (KVM-accelerated, `memory: 12G`, `cpu_count: 4`)
-   and runs `scripts/cross-build.sh` inside it (see *How the build works*). The
-   built vax packages are uploaded as an artifact.
-2. **deploy** — **runs only on `master`.** It merges all artifacts into one tree
-   (`NetBSD-<version>-<arch>/All/...`), generates a landing page and directory
-   indexes, and deploys to GitHub Pages. Branch pushes build and upload
-   artifacts but do not deploy.
+1. **build** — runs on any push (a version tag `v*` or a plain branch) and on
+   manual dispatch. One job per target in the build matrix, on `ubuntu-latest`:
+   it restores the toolchain cache, boots a NetBSD/amd64 VM via the
+   Cross-Platform Action (KVM-accelerated, `memory: 12G`, `cpu_count: 4`) and
+   runs `scripts/cross-build.sh` inside it (see *How the build works*). The built
+   package set (`.tgz` + `pkg_summary.gz`) is uploaded as an artifact. A branch
+   push stops here — it validates the change without releasing.
+2. **release** — after **build**, but only on a version-tag push or manual
+   dispatch. Downloads every target's artifact and creates one **draft** release
+   per target (`scripts/deploy/create-release.sh`), tagged `<abi>--<version>`,
+   with the packages as assets. A single job derives each ABI from its artifact
+   name, so there is no second matrix to keep in sync.
+3. **deploy** — runs on the separate `release: published` event. Regenerates the
+   Pages landing page from the currently *published* releases
+   (`scripts/deploy/generate-landing-page.sh`, read live via `gh`; drafts are
+   excluded) and deploys it. Serialized via a `pages` concurrency group.
+
+A manual `workflow_dispatch` (optionally with `mock_build`) also runs build +
+draft-release, for exercising the pipeline without cutting a real version.
 
 ## Setup
 
-GitHub Pages must be enabled with source set to **GitHub Actions**
-(Settings → Pages → Build and deployment source).
+Two one-time repository settings are required:
+
+1. **Immutable releases** must be enabled (Settings → Code security, or the
+   org-level setting). With it on, a release becomes immutable the moment it is
+   **published** — assets locked, tag protected, attestation generated — with no
+   extra workflow configuration. Drafts stay mutable until then. See the
+   [immutable releases docs][immutable-releases].
+2. **GitHub Pages** source set to **GitHub Actions** (Settings → Pages → Build
+   and deployment source), for the landing page.
 
 ## License
 
