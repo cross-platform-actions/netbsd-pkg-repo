@@ -90,9 +90,9 @@ passwordless `sudo`). `scripts/cross-build.sh` orchestrates it:
    `SU_CMD=/usr/bin/sudo /bin/sh -c` so pkgsrc escalates for dependency
    installation via passwordless `sudo` (base `su` fails non-interactively).
 4. **Publish.** The resulting vax `.tgz` and a generated `pkg_summary.gz` are
-   copied into the workspace, pulled back to the runner, and uploaded as an
-   artifact. The `release` job turns that artifact into a draft GitHub release,
-   which becomes immutable once a maintainer publishes it.
+   copied into the workspace and pulled back to the runner. On a version-tag
+   push the build job then creates a draft GitHub release from them, which
+   becomes immutable once a maintainer publishes it.
 
 An early, cheap assertion confirms pkgsrc actually resolves `SU_CMD` to sudo,
 `MACHINE_ARCH=vax` and `USE_CROSS_COMPILE=yes` **before** any long build, so a
@@ -146,21 +146,21 @@ page. Nothing is served to consumers until you publish.
 
 ## How the workflow is structured
 
-The workflow has two independent entry points and three jobs:
+The workflow has two independent entry points and two jobs:
 
 1. **build** — runs on any push (a version tag `v*` or a plain branch) and on
    manual dispatch. One job per target in the build matrix, on `ubuntu-latest`:
    it restores the toolchain cache, boots a NetBSD/amd64 VM via the
    Cross-Platform Action (KVM-accelerated, `memory: 12G`, `cpu_count: 4`) and
    runs `scripts/cross-build.sh` inside it (see *How the build works*). The built
-   package set (`.tgz` + `pkg_summary.gz`) is uploaded as an artifact. A branch
-   push stops here — it validates the change without releasing.
-2. **release** — after **build**, but only on a version-tag push or manual
-   dispatch. Downloads every target's artifact and creates one **draft** release
-   per target (`scripts/deploy/create-release.sh`), tagged `<abi>--<version>`,
-   with the packages as assets. A single job derives each ABI from its artifact
-   name, so there is no second matrix to keep in sync.
-3. **deploy** — runs on the separate `release: published` event. Regenerates the
+   package set (`.tgz` + `pkg_summary.gz`) is uploaded as an artifact. On a
+   version-tag push (or manual dispatch) a final step then creates a **draft**
+   release for that target (`scripts/deploy/create-release.sh`), tagged
+   `<abi>--<version>`, with the packages as assets — created straight from the
+   local package dir using `matrix.abi_dir`, so there is no artifact round-trip
+   or second matrix. A plain branch push stops before that step: it validates
+   the change without releasing.
+2. **deploy** — runs on the separate `release: published` event. Regenerates the
    Pages landing page from the currently *published* releases
    (`scripts/deploy/generate-landing-page.sh`, read live via `gh`; drafts are
    excluded) and deploys it. Serialized via a `pages` concurrency group.

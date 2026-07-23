@@ -36,6 +36,8 @@ jobs:
     # The `release: published` event only deploys (below); it must not rebuild.
     if: ${{ github.event_name != 'release' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the draft release (tag pushes / dispatch only)
     # A cache-hit run reaches packages in ~20 min; a cache-miss run rebuilds the
     # full build.sh toolchain (~90 min) + tool closure, so ~2 h worst case. 180
     # gives margin while capping a hung cross-platform-actions VM boot (which
@@ -155,53 +157,34 @@ jobs:
 
       # The flat package set (every .tgz plus the generated pkg_summary.gz) is
       # exactly what a release carries as assets and what pkgsrc's PKG_PATH
-      # fetches. Uploaded on every branch so a change is reviewable from a
-      # green run; only master turns it into an immutable release below.
-      # Keyed on abi_dir (not build_name) so the release job can derive each
-      # target's ABI straight from the artifact name -- no second matrix to keep
-      # in sync with this one.
+      # fetches. Uploaded on every push so a branch change is reviewable from a
+      # green run, independent of whether it becomes a release below.
       - name: Upload package artifact
         uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.abi_dir }}
           path: packages/All
 
-  # Turn each target's packages into a DRAFT GitHub release (one per target,
-  # tagged <abi>--<version> from the pushed tag). Drafts are mutable and hidden
-  # from consumers; a maintainer reviews then publishes them. Publishing is what
-  # makes a release immutable -- assets locked, tag protected, signed attestation
-  # generated (requires the repo/org "Immutable releases" setting, see readme
-  # "Setup") -- and fires the deploy job below via the `release: published`
-  # event. The releases are the artifact store consumers pin PKG_PATH to; Pages
-  # is only an index.
-  release:
-    name: Draft releases
-    needs: build
-    # Only version-tag pushes and manual dispatch cut releases; a plain branch
-    # push builds (above) to validate the change but stops short of a release.
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # create the draft release
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      # Each build target uploaded one `packages-<abi_dir>` artifact; download
-      # them all into per-artifact subdirectories.
-      - name: Download package artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-          pattern: packages-*
-
-      # One draft release per target. The ABI comes from the artifact directory
-      # name (packages-<abi_dir>), so this loop needs no matrix. VERSION is the
-      # pushed tag (github.ref_name on a tag push); a manual dispatch has no tag,
-      # so fall back to a run-scoped prerelease version for test drafts.
-      - name: Create draft releases
+      # On a version-tag push (or manual dispatch) turn this target's packages
+      # into a DRAFT release, tagged <abi>--<version>, with the packages as
+      # assets. Created straight from the local package dir with matrix.abi_dir,
+      # so there is no artifact round-trip or second matrix. A plain branch push
+      # skips this -- it validates the build but stops short of a release.
+      #
+      # Drafts are mutable and hidden from consumers; a maintainer reviews then
+      # publishes them. Publishing is what makes a release immutable -- assets
+      # locked, tag protected, signed attestation generated (requires the
+      # repo/org "Immutable releases" setting, see readme "Setup") -- and fires
+      # the deploy job below via the `release: published` event. The releases
+      # are the artifact store consumers pin PKG_PATH to; Pages is only an index.
+      #
+      # VERSION is the pushed tag (github.ref_name on a tag push); a manual
+      # dispatch has no tag, so fall back to a run-scoped prerelease version.
+      - name: Create draft release
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
         env:
           GH_TOKEN: ${{ github.token }}
+          ABI_DIR: ${{ matrix.abi_dir }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -eu
@@ -211,11 +194,7 @@ jobs:
               VERSION="v0.0.0-dispatch.${GITHUB_RUN_NUMBER}"
           fi
           export VERSION
-          for d in artifacts/packages-*; do
-              [ -d "$d" ] || continue
-              ABI_DIR="${d#artifacts/packages-}" \
-                  sh scripts/deploy/create-release.sh "$d"
-          done
+          sh scripts/deploy/create-release.sh packages/All
 
   # Landing page only -- no packages are served from Pages. It lists each
   # target's newest published release with a copy-paste PKG_PATH and
