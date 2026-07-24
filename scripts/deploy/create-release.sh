@@ -29,8 +29,7 @@ pkgdir="${1:?usage: create-release.sh <package-dir>}"
 # Tag = <abi>--<version>. The `--` separator lets the landing page split the ABI
 # (which itself contains single dashes) back out cleanly; the version comes from
 # the pushed git tag, so one `v1.2.3` push produces one release per target
-# (a single tag can back only one release, hence the per-ABI derived tags). The
-# tag ref is only created by GitHub when the draft is published.
+# (a single tag can back only one release, hence the per-ABI derived tags).
 tag="${ABI_DIR}--${VERSION}"
 pkg_path="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 
@@ -68,10 +67,25 @@ gh release verify-asset --repo ${GITHUB_REPOSITORY} ${tag} ${sample}
 \`\`\`
 NOTES
 
+# Create the tag ref at the build commit ourselves, then create the release for
+# the now-existing tag WITHOUT --target. GitHub's release endpoint refuses a
+# --target <commit> from a GITHUB_TOKEN when the release's commit range touches
+# .github/workflows (with no prior release the range is the whole history, which
+# always does) unless the token has `workflows: write` -- a scope GITHUB_TOKEN
+# cannot be granted via the permissions block (only a PAT/App token can), so it
+# 403s. Creating a plain tag ref is a contents:write operation not subject to
+# that enforcement, and once the tag exists the release needs no target and no
+# commit-range comparison happens. See cli/cli#9514.
+if gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+        -f ref="refs/tags/${tag}" -f sha="${GITHUB_SHA}" >/dev/null 2>&1; then
+    echo "created tag ref ${tag} at ${GITHUB_SHA}"
+else
+    echo "tag ref ${tag} already exists or could not be created; continuing"
+fi
+
 echo "Creating draft release $tag with $# assets"
 gh release create "$tag" \
     --repo "$GITHUB_REPOSITORY" \
-    --target "$GITHUB_SHA" \
     --title "$ABI_DIR $VERSION" \
     --notes-file "$notes_file" \
     --draft \
